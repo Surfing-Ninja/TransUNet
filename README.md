@@ -4,6 +4,16 @@ This repository contains the PyTorch implementation of the **MaS-TransUNet** arc
 
 It uses a modified Swin Transformer as the encoder coupled with Channel Attention Modules (CAM), Edge Attention Modules (EAM), and a Feedback Attention Module (FAM) for iterative multi-scale refinement.
 
+## Repository
+
+GitHub: https://github.com/Surfing-Ninja/TransUNet.git
+
+Clone with:
+```bash
+git clone https://github.com/Surfing-Ninja/TransUNet.git
+cd TransUNet
+```
+
 ## Requirements
 
 The codebase relies on PyTorch and several standard vision libraries. Install them via:
