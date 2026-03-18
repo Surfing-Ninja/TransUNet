@@ -1,0 +1,16 @@
+torch
+torchvision
+timm==0.9.12
+einops
+albumentations
+opencv-python-headless
+scikit-image
+scikit-learn
+monai
+matplotlib
+seaborn
+pandas
+tqdm
+tensorboard
+scipy
+Pillow
