@@ -8,7 +8,7 @@ import torch
 class Config:
     # Image and training
     image_size: int = 224
-    batch_size: int = 8
+    batch_size: int = 2  # Reduced from 8 to fit in Colab T4 16GB memory
     num_epochs: int = 100
     learning_rate: float = 0.01
     momentum: float = 0.99
