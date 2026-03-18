@@ -63,8 +63,9 @@ python evaluate.py tcga_lgg
 A dedicated Jupyter Notebook `colab_train.ipynb` is included for effortless training on Google Colab hardware (e.g. T4 GPUs). 
 
 To use it:
-1. Upload your dataset zip files (e.g. `archive*.zip`) to `My Drive/`.
+1. Upload your dataset zip files (e.g. `archive*.zip`) to `My Drive/datasets/`.
 2. Open `colab_train.ipynb` in Google Colab.
-3. Run the auto-unzip dataset cell: it extracts and organizes data into `My Drive/datasets/`.
-4. Run the Colab mode check cell and confirm datasets show `Found`.
-5. Continue with preprocessing, training, and checkpoint verification cells.
+3. Run the auto-unzip dataset cell: it scans `My Drive/datasets/`, extracts zips, and organizes data into dataset folders.
+4. Re-running the cell skips unchanged zip files automatically (prevents repeated unzipping).
+5. Run the Colab mode check cell and confirm datasets show `Found`.
+6. Continue with preprocessing, training, and checkpoint verification cells.

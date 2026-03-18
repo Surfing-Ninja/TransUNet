@@ -36,7 +36,7 @@ class Config:
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
 
     # Environment flag – set True when running on Google Colab
-    is_colab: bool = False
+    is_colab: bool = 'COLAB_GPU' in os.environ or 'COLAB_RELEASE_TAG' in os.environ
 
     # ------------------------------------------------------------------
     # Derived paths (resolved after init based on is_colab)
@@ -46,6 +46,10 @@ class Config:
     dataset_paths: dict = field(init=False)
 
     def __post_init__(self):
+        # Auto-detect Colab by checking if Drive is mounted
+        if os.path.isdir('/content/drive'):
+            self.is_colab = True
+
         if self.is_colab:
             self.base_data_dir = "/content/drive/MyDrive/datasets"
             self.checkpoint_dir = "/content/drive/MyDrive/mas_transunet_checkpoints"
