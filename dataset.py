@@ -241,20 +241,25 @@ def get_dataloaders(
             f"Supported image extensions: {', '.join(IMAGE_EXTS)}"
         )
 
+    # Colab can occasionally hang/slow with multi-worker OpenCV pipelines on Drive.
+    # Prefer single-process loading there for reliability.
+    num_workers = 0 if config.is_colab else 2
+    pin_memory = config.device.startswith("cuda")
+
     train_loader = DataLoader(
         train_ds,
         batch_size=config.batch_size,
         shuffle=True,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
         drop_last=True,
     )
     test_loader = DataLoader(
         test_ds,
         batch_size=config.batch_size,
         shuffle=False,
-        num_workers=2,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
     return train_loader, test_loader

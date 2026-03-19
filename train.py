@@ -47,7 +47,14 @@ def train_one_epoch(
     running_loss = 0.0
     num_batches = 0
 
-    for batch in loader:
+    batch_bar = tqdm(
+        loader,
+        desc=f"train e{epoch + 1}",
+        leave=False,
+        unit="batch",
+    )
+
+    for batch in batch_bar:
         images = batch["image"].to(device)
         masks = batch["mask"].to(device)
         edges = batch["edge"].to(device)
@@ -67,6 +74,7 @@ def train_one_epoch(
 
         running_loss += total_loss.item()
         num_batches += 1
+        batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
 
         # Update previous-epoch masks for FAM
         pred_np = outputs["pred_mask"].detach().cpu().numpy()
@@ -155,6 +163,12 @@ def main():
     # ---- Data ------------------------------------------------------------
     train_loader, test_loader = get_dataloaders(dataset_name, config)
     train_dataset: MedicalSegDataset = train_loader.dataset
+    print(
+        f"Data ready for {dataset_name}: "
+        f"train_samples={len(train_dataset)}, train_batches={len(train_loader)}, "
+        f"test_samples={len(test_loader.dataset)}, test_batches={len(test_loader)}, "
+        f"batch_size={config.batch_size}"
+    )
 
     # ---- TensorBoard -----------------------------------------------------
     log_dir = os.path.join(config.log_dir, dataset_name)
