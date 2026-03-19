@@ -224,7 +224,7 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "dataset_name",
-        choices=["tcga_lgg", "covid_ct", "dsb2018", "kvasir_seg", "isic2018"],
+        choices=["covid_ct", "kvasir_seg", "isic2018", "mri_glioma"],
         help="Dataset to evaluate.",
     )
     parser.add_argument(

@@ -58,11 +58,10 @@ class Config:
             self.checkpoint_dir = "./checkpoints"
 
         dataset_names = [
-            "tcga_lgg",
             "covid_ct",
-            "dsb2018",
             "kvasir_seg",
             "isic2018",
+            "mri_glioma",
         ]
 
         self.dataset_paths = {}

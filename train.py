@@ -131,7 +131,7 @@ def main():
     )
     parser.add_argument(
         "dataset_name",
-        choices=["tcga_lgg", "covid_ct", "dsb2018", "kvasir_seg", "isic2018"],
+        choices=["covid_ct", "kvasir_seg", "isic2018", "mri_glioma"],
         help="Dataset to train on.",
     )
     args = parser.parse_args()
