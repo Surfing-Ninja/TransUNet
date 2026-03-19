@@ -66,17 +66,28 @@ class MedicalSegDataset(Dataset):
         # --- Load image (BGR → RGB) --------------------------------------
         img_path = os.path.join(self.images_dir, fname)
         image = cv2.imread(img_path, cv2.IMREAD_COLOR)
+        if image is None:
+            raise ValueError(f"Failed to read image file: {img_path}")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
         # --- Load ground-truth mask (grayscale, binarise) -----------------
         mask_path = self._find_file(self.masks_dir, stem)
+        if mask_path is None:
+            raise ValueError(
+                f"Mask not found for '{fname}' in {self.masks_dir}. "
+                f"Supported extensions: {', '.join(IMAGE_EXTS)}"
+            )
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None:
+            raise ValueError(f"Failed to read mask file: {mask_path}")
         mask = (mask > 127).astype(np.uint8) * 255
 
         # --- Load edge map (grayscale) ------------------------------------
         edge_path = self._find_file(self.edges_dir, stem)
         if edge_path is not None:
             edge = cv2.imread(edge_path, cv2.IMREAD_GRAYSCALE)
+            if edge is None:
+                edge = cv2.Canny(mask, 50, 150)
         else:
             edge = cv2.Canny(mask, 50, 150)
 
@@ -86,6 +97,19 @@ class MedicalSegDataset(Dataset):
         else:
             prev_mask = self._otsu_initial_mask(
                 cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+            )
+
+        # Ensure all targets match image HxW before Albumentations shape checks.
+        image_h, image_w = image.shape[:2]
+        if mask.shape[:2] != (image_h, image_w):
+            mask = cv2.resize(mask, (image_w, image_h), interpolation=cv2.INTER_NEAREST)
+        if edge.shape[:2] != (image_h, image_w):
+            edge = cv2.resize(edge, (image_w, image_h), interpolation=cv2.INTER_NEAREST)
+        if prev_mask.shape[:2] != (image_h, image_w):
+            prev_mask = cv2.resize(
+                prev_mask,
+                (image_w, image_h),
+                interpolation=cv2.INTER_NEAREST,
             )
 
         # --- Augmentation / transforms ------------------------------------

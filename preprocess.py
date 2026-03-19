@@ -2,7 +2,6 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-import os
 import argparse
 from pathlib import Path
 
