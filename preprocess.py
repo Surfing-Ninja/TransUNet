@@ -8,7 +8,11 @@ from tqdm import tqdm
 
 from config import CFG
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+def _is_supported_image(filename: str) -> bool:
+    return filename.lower().endswith(IMAGE_EXTS)
 
 ALL_DATASETS = ["tcga_lgg", "covid_ct", "dsb2018", "kvasir_seg", "isic2018"]
 
@@ -24,7 +28,7 @@ def generate_edge_maps(masks_dir: str, edges_dir: str) -> int:
 
     mask_files = sorted(
         f for f in masks_path.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+        if f.is_file() and _is_supported_image(f.name)
     )
 
     count = 0
@@ -55,12 +59,12 @@ def filter_low_content_pairs(
 
     image_files = sorted(
         f.name for f in images_path.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+        if f.is_file() and _is_supported_image(f.name)
     )
 
     mask_lookup = {
         f.stem: f.name for f in masks_path.iterdir()
-        if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+        if f.is_file() and _is_supported_image(f.name)
     }
 
     kept: list[str] = []

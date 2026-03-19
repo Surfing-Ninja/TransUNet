@@ -11,7 +11,11 @@ import albumentations as A
 
 from config import Config, CFG
 
-IMAGE_EXTS = {".png", ".jpg", ".jpeg"}
+IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
+
+
+def _is_supported_image(filename: str) -> bool:
+    return filename.lower().endswith(IMAGE_EXTS)
 
 
 class MedicalSegDataset(Dataset):
@@ -39,7 +43,7 @@ class MedicalSegDataset(Dataset):
         self.filenames = sorted(
             f.name
             for f in Path(self.images_dir).iterdir()
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTS
+            if f.is_file() and _is_supported_image(f.name)
         )
 
         # Stores the previous epoch's predicted mask (numpy uint8 H×W)
@@ -133,7 +137,7 @@ class MedicalSegDataset(Dataset):
         d = Path(directory)
         if not d.is_dir():
             return None
-        for ext in (".png", ".jpg", ".jpeg"):
+        for ext in IMAGE_EXTS:
             candidate = d / (stem + ext)
             if candidate.exists():
                 return str(candidate)
@@ -201,6 +205,17 @@ def get_dataloaders(
         config=config,
         transform=get_val_transforms(),
     )
+
+    if len(train_ds) == 0:
+        raise ValueError(
+            f"No training samples found for '{dataset_name}' in {train_ds.images_dir}. "
+            f"Supported image extensions: {', '.join(IMAGE_EXTS)}"
+        )
+    if len(test_ds) == 0:
+        raise ValueError(
+            f"No test samples found for '{dataset_name}' in {test_ds.images_dir}. "
+            f"Supported image extensions: {', '.join(IMAGE_EXTS)}"
+        )
 
     train_loader = DataLoader(
         train_ds,
