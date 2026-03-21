@@ -115,7 +115,11 @@ class Config:
             self.base_data_dir = "/content/drive/MyDrive/datasets"
             self.checkpoint_dir = "/content/drive/MyDrive/mas_transunet_checkpoints"
         elif self.is_kaggle:
-            self.base_data_dir = self._resolve_kaggle_root("transunet")
+            explicit_kaggle_data_root = "/kaggle/input/datasets/mohitkhalote/transunet"
+            if os.path.isdir(explicit_kaggle_data_root):
+                self.base_data_dir = explicit_kaggle_data_root
+            else:
+                self.base_data_dir = self._resolve_kaggle_root("transunet")
             self.checkpoint_dir = "/kaggle/working/checkpoints"
         else:
             self.base_data_dir = "./data"
