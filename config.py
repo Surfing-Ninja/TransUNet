@@ -76,6 +76,30 @@ class Config:
                     return os.path.join(current_root, directory)
         return None
 
+    @staticmethod
+    def _resolve_kaggle_root(preferred: str = "transunet") -> str:
+        base = "/kaggle/input"
+        preferred_path = os.path.join(base, preferred)
+        if os.path.isdir(preferred_path):
+            return preferred_path
+
+        if not os.path.isdir(base):
+            return preferred_path
+
+        preferred_lower = preferred.lower()
+        candidates = [d for d in os.listdir(base) if os.path.isdir(os.path.join(base, d))]
+
+        for d in candidates:
+            if d.lower() == preferred_lower:
+                return os.path.join(base, d)
+
+        for d in candidates:
+            d_low = d.lower()
+            if "transunet" in d_low or "trans-unet" in d_low:
+                return os.path.join(base, d)
+
+        return preferred_path
+
     def __post_init__(self):
         # Auto-detect Colab by checking if Drive is mounted
         if os.path.isdir('/content/drive'):
@@ -91,7 +115,7 @@ class Config:
             self.base_data_dir = "/content/drive/MyDrive/datasets"
             self.checkpoint_dir = "/content/drive/MyDrive/mas_transunet_checkpoints"
         elif self.is_kaggle:
-            self.base_data_dir = "/kaggle/input/transunet"
+            self.base_data_dir = self._resolve_kaggle_root("transunet")
             self.checkpoint_dir = "/kaggle/working/checkpoints"
         else:
             self.base_data_dir = "./data"
@@ -113,7 +137,7 @@ class Config:
         self.kaggle_source_paths = {}
 
         if self.is_kaggle:
-            kaggle_root = "/kaggle/input/transunet"
+            kaggle_root = self.base_data_dir
             edges_root = "/kaggle/working/edges"
 
             covid_images = os.path.join(kaggle_root, "archive (4)", "ct_scans")
