@@ -52,6 +52,12 @@ python train.py tcga_lgg
 ```
 Hyperparameters (epochs, batch size, learning rates) are configured centrally inside `config.py`.
 
+When training all supported datasets sequentially (for example via `colab_train.ipynb` auto-detection), the enforced order is:
+
+```text
+mri_glioma -> kvasir_seg -> isic2018 -> covid_ct
+```
+
 ### 3. Evaluation
 After training, evaluate the best checkpoint and construct side-by-side PNG analyses on the test set:
 ```bash

@@ -14,7 +14,10 @@ def window_size_to_input_resolution(window_size: int) -> int:
 class PatchEmbedding(nn.Module):
     """Project a feature map (B, C, H, W) → tokens (B, N, D) with a 1×1
     convolution followed by LayerNorm.  Learnable 1-D positional embeddings
-    of shape (1, N, D) are added to the token sequence."""
+    of shape (1, N, D) are added to the token sequence.
+    
+    WARNING: image_size must remain 224 for positional embedding shapes to match
+    across epochs and datasets. Changing this will break pos_embed interpolation."""
 
     def __init__(self, in_channels: int, embed_dim: int, input_resolution: tuple[int, int]):
         super().__init__()

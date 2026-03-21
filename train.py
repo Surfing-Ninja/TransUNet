@@ -23,6 +23,7 @@ from utils.checkpointing import (
     save_epoch_masks,
     load_epoch_masks,
 )
+from evaluate import evaluate_dataset
 
 
 # ======================================================================
@@ -129,26 +130,13 @@ def validate(
 # ======================================================================
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Train MaS-TransUNet on a medical segmentation dataset."
-    )
-    parser.add_argument(
-        "dataset_name",
-        choices=["covid_ct", "kvasir_seg", "isic2018", "mri_glioma"],
-        help="Dataset to train on.",
-    )
-    parser.add_argument(
-        "--fast",
-        action="store_true",
-        help="Enable fast mode (skips heavy train augmentations).",
-    )
-    args = parser.parse_args()
-    dataset_name = args.dataset_name
-
-    config = CFG
-    config.fast_mode = args.fast
-    device = config.device
+def train_single_dataset(
+    dataset_name: str, config, device: str, results_table: dict
+) -> float:
+    """Train and evaluate a single dataset. Returns best Dice score."""
+    print(f"\n{'='*70}")
+    print(f"  DATASET: {dataset_name:15s}  |  batch_size={config.batch_size}  num_workers={config.num_workers}")
+    print(f"{'='*70}\n")
 
     # ---- Model -----------------------------------------------------------
     model = build_model(config)
@@ -175,10 +163,8 @@ def main():
     train_loader, test_loader = get_dataloaders(dataset_name, config)
     train_dataset: MedicalSegDataset = train_loader.dataset
     print(
-        f"Data ready for {dataset_name}: "
-        f"train_samples={len(train_dataset)}, train_batches={len(train_loader)}, "
-        f"test_samples={len(test_loader.dataset)}, test_batches={len(test_loader)}, "
-        f"batch_size={config.batch_size}, fast_mode={config.fast_mode}"
+        f"Data ready: train={len(train_dataset)} | test={len(test_loader.dataset)} | "
+        f"batches={len(train_loader)} | fast_mode={config.fast_mode}\n"
     )
 
     # ---- TensorBoard -----------------------------------------------------
@@ -256,7 +242,82 @@ def main():
         )
 
     writer.close()
-    print(f"\nTraining complete. Best Dice: {best_dice:.4f}")
+    print(f"\n  Training complete. Best Dice: {best_dice:.4f}\n")
+
+    # ---- Auto-evaluation ------------------------------------------------
+    best_ckpt = os.path.join(config.checkpoint_dir, f"{dataset_name}_best.pth")
+    if os.path.isfile(best_ckpt):
+        print(f"  Evaluating {dataset_name} with best checkpoint…\n")
+        try:
+            evaluate_dataset(dataset_name, best_ckpt)
+        except Exception as e:
+            print(f"  [Evaluation skipped due to error: {e}]\n")
+    else:
+        print(f"  [No best checkpoint found at {best_ckpt}; evaluation skipped]\n")
+
+    results_table[dataset_name] = best_dice
+    return best_dice
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Train MaS-TransUNet on one or more datasets sequentially."
+    )
+    parser.add_argument(
+        "dataset_name",
+        nargs="?",
+        choices=["covid_ct", "kvasir_seg", "isic2018", "mri_glioma", "all"],
+        default="all",
+        help="Dataset to train on, or 'all' for sequential training on all datasets.",
+    )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Enable fast mode (skips heavy train augmentations).",
+    )
+    args = parser.parse_args()
+    dataset_spec = args.dataset_name
+
+    config = CFG
+    config.fast_mode = args.fast
+    device = config.device
+
+    # Determine which datasets to train on
+    all_datasets = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
+    if dataset_spec == "all":
+        datasets_to_train = all_datasets
+    else:
+        datasets_to_train = [dataset_spec]
+
+    # Train each dataset sequentially
+    results_table = {}
+    for ds_name in datasets_to_train:
+        try:
+            train_single_dataset(ds_name, config, device, results_table)
+        except Exception as e:
+            print(f"\n  [ERROR training {ds_name}: {e}]")
+            print(f"  [Continuing to next dataset…]\n")
+            results_table[ds_name] = None
+            continue
+
+    # ---- Print summary table --------------------------------------------
+    print(f"\n{'='*70}")
+    print(f"  SUMMARY: All Datasets")
+    print(f"{'='*70}\n")
+    header = f"{'Dataset':<20s}  {'Best Dice':>10s}"
+    sep = "-" * len(header)
+    print(f"  {header}")
+    print(f"  {sep}")
+    for ds_name in all_datasets:
+        if ds_name in results_table:
+            dice = results_table[ds_name]
+            if dice is not None:
+                print(f"  {ds_name:<20s}  {dice:10.4f}")
+            else:
+                print(f"  {ds_name:<20s}  {'FAILED':>10s}")
+        else:
+            print(f"  {ds_name:<20s}  {'SKIPPED':>10s}")
+    print(f"  {sep}\n")
 
 
 if __name__ == "__main__":

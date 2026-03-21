@@ -8,7 +8,7 @@ import torch
 class Config:
     # Image and training
     image_size: int = 224
-    batch_size: int = 2  # Reduced from 8 to fit in Colab T4 16GB memory
+    batch_size: int = 8
     num_epochs: int = 100
     learning_rate: float = 0.01
     momentum: float = 0.99
@@ -32,6 +32,9 @@ class Config:
     # Checkpointing / logging
     checkpoint_interval: int = 5  # save every 5 epochs
     log_dir: str = "./logs"
+
+    # Data loading
+    num_workers: int = field(default_factory=lambda: 0 if ('COLAB_GPU' in os.environ or 'COLAB_RELEASE_TAG' in os.environ or os.path.isdir('/content/drive')) else 4)
 
     # Device
     device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
@@ -59,10 +62,10 @@ class Config:
             self.checkpoint_dir = "./checkpoints"
 
         dataset_names = [
-            "covid_ct",
+            "mri_glioma",
             "kvasir_seg",
             "isic2018",
-            "mri_glioma",
+            "covid_ct",
         ]
 
         self.dataset_paths = {}
