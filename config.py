@@ -116,10 +116,12 @@ class Config:
             self.checkpoint_dir = "/content/drive/MyDrive/mas_transunet_checkpoints"
         elif self.is_kaggle:
             explicit_kaggle_data_root = "/kaggle/input/datasets/mohitkhalote/transunet"
-            if os.path.isdir(explicit_kaggle_data_root):
-                self.base_data_dir = explicit_kaggle_data_root
-            else:
-                self.base_data_dir = self._resolve_kaggle_root("transunet")
+            if not os.path.isdir(explicit_kaggle_data_root):
+                raise FileNotFoundError(
+                    f"Expected Kaggle dataset at {explicit_kaggle_data_root}. "
+                    "Attach that dataset path before running this notebook."
+                )
+            self.base_data_dir = explicit_kaggle_data_root
             self.checkpoint_dir = "/kaggle/working/checkpoints"
         else:
             self.base_data_dir = "./data"
