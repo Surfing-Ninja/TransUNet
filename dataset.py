@@ -58,6 +58,15 @@ def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
         return
 
     src_img_path = Path(src_images)
+    src_mask_path = Path(src_masks)
+
+    if not src_img_path.is_dir() or not src_mask_path.is_dir():
+        print(
+            f"Skipping {dataset_name}: source paths not found. "
+            f"images={src_images}, masks={src_masks}"
+        )
+        return
+
     img_files = sorted(
         f for f in src_img_path.iterdir()
         if f.is_file() and _is_supported_image(f.name)
@@ -73,7 +82,6 @@ def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
         return s
 
     mask_by_stem: dict[str, Path] = {}
-    src_mask_path = Path(src_masks)
     for mask_file in src_mask_path.iterdir():
         if not mask_file.is_file() or not _is_supported_image(mask_file.name):
             continue

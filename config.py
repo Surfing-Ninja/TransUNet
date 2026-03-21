@@ -133,7 +133,20 @@ class Config:
             isic_test_images = os.path.join(isic_root, "ISIC2018_Task1-2_Test_Input")
             isic_test_masks = os.path.join(isic_root, "ISIC2018_Task1-2_Validation_Input")
 
-            mri_root = os.path.join(kaggle_root, "archive (7)", "Brain_MRI")
+            mri_archive_root = os.path.join(kaggle_root, "archive (7)")
+            mri_root = self._find_existing_subdir(
+                mri_archive_root,
+                [
+                    "Brain_MRI",
+                    "Brain MRI",
+                    "brain_mri",
+                    "brain-mri",
+                    "BrainMRI",
+                ],
+            ) or self._find_first_matching_subdir(
+                mri_archive_root,
+                ["brain", "mri", "glioma"],
+            ) or mri_archive_root
             mri_images = self._find_existing_subdir(mri_root, ["images", "Images"]) \
                 or self._find_first_matching_subdir(mri_root, ["image", "t1", "flair"]) \
                 or mri_root
