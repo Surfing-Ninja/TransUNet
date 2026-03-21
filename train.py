@@ -266,9 +266,14 @@ def main():
     parser.add_argument(
         "dataset_name",
         nargs="?",
-        choices=["covid_ct", "kvasir_seg", "isic2018", "mri_glioma", "all"],
-        default="all",
-        help="Dataset to train on, or 'all' for sequential training on all datasets.",
+        choices=["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"],
+        default=None,
+        help="Dataset to train on. If omitted, sequential all-dataset mode is used.",
+    )
+    parser.add_argument(
+        "--all",
+        action="store_true",
+        help="Force sequential training over all datasets.",
     )
     parser.add_argument(
         "--fast",
@@ -284,7 +289,7 @@ def main():
 
     # Determine which datasets to train on
     all_datasets = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
-    if dataset_spec == "all":
+    if args.all or dataset_spec is None:
         datasets_to_train = all_datasets
     else:
         datasets_to_train = [dataset_spec]

@@ -17,7 +17,7 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 def _is_supported_image(filename: str) -> bool:
     return filename.lower().endswith(IMAGE_EXTS)
 
-ALL_DATASETS = ["covid_ct", "kvasir_seg", "isic2018", "mri_glioma"]
+ALL_DATASETS = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
 
 
 def generate_edge_maps(masks_dir: str, edges_dir: str) -> int:

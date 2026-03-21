@@ -1,4 +1,6 @@
 import os
+import random
+import shutil
 from pathlib import Path
 
 import cv2
@@ -16,6 +18,100 @@ IMAGE_EXTS = (".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff")
 
 def _is_supported_image(filename: str) -> bool:
     return filename.lower().endswith(IMAGE_EXTS)
+
+
+def _find_file_by_stem(directory: str, stem: str) -> str | None:
+    d = Path(directory)
+    if not d.is_dir():
+        return None
+    for ext in IMAGE_EXTS:
+        candidate = d / (stem + ext)
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
+    if not config.is_kaggle:
+        return
+    if dataset_name not in {"covid_ct", "mri_glioma"}:
+        return
+
+    source = config.kaggle_source_paths.get(dataset_name, {})
+    src_images = source.get("images")
+    src_masks = source.get("masks")
+    if not src_images or not src_masks:
+        raise ValueError(f"Missing Kaggle source paths for {dataset_name}")
+
+    target_root = Path("/kaggle/working") / dataset_name
+    train_images_dir = target_root / "train" / "images"
+    train_masks_dir = target_root / "train" / "masks"
+    test_images_dir = target_root / "test" / "images"
+    test_masks_dir = target_root / "test" / "masks"
+
+    for directory in [train_images_dir, train_masks_dir, test_images_dir, test_masks_dir]:
+        directory.mkdir(parents=True, exist_ok=True)
+
+    train_existing = [f for f in train_images_dir.iterdir() if f.is_file() and _is_supported_image(f.name)]
+    test_existing = [f for f in test_images_dir.iterdir() if f.is_file() and _is_supported_image(f.name)]
+    if train_existing and test_existing:
+        return
+
+    src_img_path = Path(src_images)
+    img_files = sorted(
+        f for f in src_img_path.iterdir()
+        if f.is_file() and _is_supported_image(f.name)
+    )
+
+    def _normalize_stem(stem: str) -> str:
+        s = stem.lower()
+        if dataset_name == "covid_ct":
+            s = s.replace("_org", "")
+        s = s.replace("_mask", "")
+        s = s.replace("_seg", "")
+        s = s.replace("segmentation", "")
+        return s
+
+    mask_by_stem: dict[str, Path] = {}
+    src_mask_path = Path(src_masks)
+    for mask_file in src_mask_path.iterdir():
+        if not mask_file.is_file() or not _is_supported_image(mask_file.name):
+            continue
+        mask_by_stem[mask_file.stem.lower()] = mask_file
+        mask_by_stem[_normalize_stem(mask_file.stem)] = mask_file
+
+    pairs: list[tuple[Path, Path]] = []
+    for image_file in img_files:
+        mask_file = _find_file_by_stem(src_masks, image_file.stem)
+        if mask_file is None:
+            normalized = _normalize_stem(image_file.stem)
+            mask_match = mask_by_stem.get(normalized) or mask_by_stem.get(image_file.stem.lower())
+            mask_file = str(mask_match) if mask_match is not None else None
+        if mask_file is not None:
+            pairs.append((image_file, Path(mask_file)))
+
+    if not pairs:
+        raise ValueError(
+            f"No image/mask pairs found for {dataset_name} in {src_images} and {src_masks}"
+        )
+
+    rng = random.Random(42)
+    rng.shuffle(pairs)
+
+    n_total = len(pairs)
+    n_test = max(1, int(0.1 * n_total)) if n_total > 1 else 0
+    n_train = n_total - n_test
+
+    train_pairs = pairs[:n_train]
+    test_pairs = pairs[n_train:]
+
+    def _copy_pairs(target_img_dir: Path, target_msk_dir: Path, selected_pairs: list[tuple[Path, Path]]) -> None:
+        for image_src, mask_src in selected_pairs:
+            shutil.copy2(image_src, target_img_dir / image_src.name)
+            shutil.copy2(mask_src, target_msk_dir / mask_src.name)
+
+    _copy_pairs(train_images_dir, train_masks_dir, train_pairs)
+    _copy_pairs(test_images_dir, test_masks_dir, test_pairs)
 
 
 class MedicalSegDataset(Dataset):
@@ -39,6 +135,10 @@ class MedicalSegDataset(Dataset):
         self.images_dir = paths[f"{split}_images"]
         self.masks_dir = paths[f"{split}_masks"]
         self.edges_dir = paths[f"{split}_edges"]
+
+        if config.is_kaggle:
+            self.edges_dir = f"/kaggle/working/edges/{dataset_name}/{split}"
+            os.makedirs(self.edges_dir, exist_ok=True)
 
         self.filenames = sorted(
             f.name
@@ -229,6 +329,8 @@ def get_dataloaders(
     config: Config = CFG,
 ) -> tuple[DataLoader, DataLoader]:
     """Return (train_loader, test_loader) for the given dataset."""
+
+    _prepare_kaggle_working_split(dataset_name, config)
 
     train_ds = MedicalSegDataset(
         dataset_name=dataset_name,
