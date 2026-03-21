@@ -121,7 +121,12 @@ class FAM(nn.Module):
         current_binary_mask = (current_soft >= 0.5).float()        # (B, 1, H, W)
 
         # Step 2 – resize previous mask to feature resolution
-        prev_mask_resized = F.adaptive_max_pool2d(prev_mask, (H, W))  # (B, 1, H, W)
+        prev_mask_resized = F.interpolate(
+            prev_mask.float(),
+            size=(H, W),
+            mode="bilinear",
+            align_corners=False,
+        )  # (B, 1, H, W)
 
         # Step 3 – union of current and previous masks
         union_mask = torch.maximum(current_binary_mask, prev_mask_resized)  # (B, 1, H, W)

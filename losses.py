@@ -53,6 +53,7 @@ class MaSLoss(nn.Module):
             pred:   (B, 1, H, W) probabilities in [0, 1]
             target: (B, 1, H, W) binary {0, 1}
         """
+        pred = pred.clamp(1e-6, 1 - 1e-6)
         return F.binary_cross_entropy(pred, target, reduction="mean")
 
     def _primary_loss(

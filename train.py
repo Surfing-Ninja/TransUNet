@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from torch.cuda.amp import autocast, GradScaler
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
@@ -34,6 +35,7 @@ def train_one_epoch(
     loader,
     optimizer: optim.Optimizer,
     criterion: MaSLoss,
+    scaler: GradScaler,
     device: str,
     epoch: int,
     dataset: MedicalSegDataset,
@@ -61,16 +63,18 @@ def train_one_epoch(
         prev_masks = batch["prev_mask"].to(device)
         filenames = batch["filename"]
 
-        # Forward
-        outputs = model(images, prev_masks)
+        # Forward (AMP)
+        with autocast(enabled=device.startswith("cuda")):
+            outputs = model(images, prev_masks)
 
-        targets = {"mask": masks, "edge": edges}
-        total_loss, _ = criterion(outputs, targets)
+            targets = {"mask": masks, "edge": edges}
+            total_loss, _ = criterion(outputs, targets)
 
         # Backward
         optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
+        scaler.scale(total_loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         running_loss += total_loss.item()
         num_batches += 1
@@ -134,10 +138,16 @@ def main():
         choices=["covid_ct", "kvasir_seg", "isic2018", "mri_glioma"],
         help="Dataset to train on.",
     )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Enable fast mode (skips heavy train augmentations).",
+    )
     args = parser.parse_args()
     dataset_name = args.dataset_name
 
     config = CFG
+    config.fast_mode = args.fast
     device = config.device
 
     # ---- Model -----------------------------------------------------------
@@ -156,6 +166,7 @@ def main():
         T_max=config.num_epochs,
         eta_min=1e-6,
     )
+    scaler = GradScaler(enabled=device.startswith("cuda"))
 
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
@@ -167,7 +178,7 @@ def main():
         f"Data ready for {dataset_name}: "
         f"train_samples={len(train_dataset)}, train_batches={len(train_loader)}, "
         f"test_samples={len(test_loader.dataset)}, test_batches={len(test_loader)}, "
-        f"batch_size={config.batch_size}"
+        f"batch_size={config.batch_size}, fast_mode={config.fast_mode}"
     )
 
     # ---- TensorBoard -----------------------------------------------------
@@ -186,6 +197,7 @@ def main():
 
     # ---- Metric aggregator -----------------------------------------------
     aggregator = MetricAggregator()
+    val_interval = 3
 
     # ---- Training loop ---------------------------------------------------
     epoch_bar = tqdm(
@@ -197,50 +209,48 @@ def main():
     for epoch in epoch_bar:
         # Train
         train_loss = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, epoch, train_dataset,
+            model, train_loader, optimizer, criterion, scaler, device, epoch, train_dataset,
         )
 
-        # Validate
-        val_dice = validate(model, test_loader, aggregator, device)
+        # Validate every N epochs
+        run_validation = (epoch + 1) % val_interval == 0
+        val_dice = None
+        if run_validation:
+            val_dice = validate(model, test_loader, aggregator, device)
 
         # Scheduler step
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
 
         # ---- Checkpointing ----------------------------------------------
-        is_best = val_dice > best_dice
+        is_best = run_validation and (val_dice > best_dice)
         if is_best:
             best_dice = val_dice
 
-        if (epoch + 1) % config.checkpoint_interval == 0:
+        if (epoch + 1) % config.checkpoint_interval == 0 or is_best:
             save_checkpoint(
                 model, optimizer, scheduler, epoch, best_dice,
                 dataset_name, config.checkpoint_dir, is_best=is_best,
             )
 
-        if is_best:
-            save_checkpoint(
-                model, optimizer, scheduler, epoch, best_dice,
-                dataset_name, config.checkpoint_dir, is_best=True,
-            )
-
-        # Save epoch masks for FAM
-        save_epoch_masks(train_dataset.prev_masks, dataset_name, config.checkpoint_dir)
+        # Save epoch masks for FAM on checkpoint intervals
+        if (epoch + 1) % config.checkpoint_interval == 0:
+            save_epoch_masks(train_dataset.prev_masks, dataset_name, config.checkpoint_dir)
 
         # ---- TensorBoard logging -----------------------------------------
         writer.add_scalar("train/loss", train_loss, epoch)
-        writer.add_scalar("val/dice", val_dice, epoch)
+        if run_validation:
+            writer.add_scalar("val/dice", val_dice, epoch)
+            stats = aggregator.mean_std()
+            for metric_name, (mean_val, _) in stats.items():
+                writer.add_scalar(f"val/{metric_name}", mean_val, epoch)
         writer.add_scalar("val/best_dice", best_dice, epoch)
         writer.add_scalar("lr", current_lr, epoch)
-
-        stats = aggregator.mean_std()
-        for metric_name, (mean_val, _) in stats.items():
-            writer.add_scalar(f"val/{metric_name}", mean_val, epoch)
 
         # ---- Progress bar ------------------------------------------------
         epoch_bar.set_postfix(
             loss=f"{train_loss:.4f}",
-            dice=f"{val_dice:.4f}",
+            dice=f"{val_dice:.4f}" if run_validation else "-",
             best=f"{best_dice:.4f}",
             lr=f"{current_lr:.1e}",
         )

@@ -176,22 +176,35 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 
-def get_train_transforms() -> A.Compose:
-    return A.Compose(
+def get_train_transforms(fast_mode: bool = False) -> A.Compose:
+    transforms = [
+        A.PadIfNeeded(min_height=256, min_width=256),
+        A.RandomCrop(height=224, width=224),
+        A.HorizontalFlip(p=0.5),
+        A.VerticalFlip(p=0.3),
+        A.Rotate(limit=30, p=0.5),
+    ]
+
+    if not fast_mode:
+        transforms.extend(
+            [
+                A.ElasticTransform(p=0.3),
+                A.GridDistortion(p=0.3),
+                A.OpticalDistortion(p=0.2),
+            ]
+        )
+
+    transforms.extend(
         [
-            A.PadIfNeeded(min_height=256, min_width=256),
-            A.RandomCrop(height=224, width=224),
-            A.HorizontalFlip(p=0.5),
-            A.VerticalFlip(p=0.3),
-            A.Rotate(limit=30, p=0.5),
-            A.ElasticTransform(p=0.3),
-            A.GridDistortion(p=0.3),
-            A.OpticalDistortion(p=0.2),
             A.RandomBrightnessContrast(p=0.4),
             A.RandomGamma(p=0.3),
             A.CLAHE(p=0.3),
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ],
+        ]
+    )
+
+    return A.Compose(
+        transforms,
         additional_targets={"edge": "mask", "prev_mask": "mask"},
     )
 
@@ -221,7 +234,7 @@ def get_dataloaders(
         dataset_name=dataset_name,
         split="train",
         config=config,
-        transform=get_train_transforms(),
+        transform=get_train_transforms(config.fast_mode),
     )
     test_ds = MedicalSegDataset(
         dataset_name=dataset_name,

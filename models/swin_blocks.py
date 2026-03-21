@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from einops import rearrange
 from timm.models.swin_transformer import SwinTransformerBlock
 
@@ -17,8 +18,9 @@ class PatchEmbedding(nn.Module):
 
     def __init__(self, in_channels: int, embed_dim: int, input_resolution: tuple[int, int]):
         super().__init__()
+        self.init_H, self.init_W = input_resolution
         self.H, self.W = input_resolution
-        self.N = self.H * self.W
+        self.N = self.init_H * self.init_W
         self.embed_dim = embed_dim
 
         self.proj = nn.Conv2d(in_channels, embed_dim, kernel_size=1, stride=1)
@@ -32,7 +34,21 @@ class PatchEmbedding(nn.Module):
         self.H, self.W = x.shape[2], x.shape[3]
         x = rearrange(x, "b d h w -> b (h w) d")          # (B, N, D)
         x = self.norm(x)
-        x = x + self.pos_embed
+
+        if x.shape[1] != self.pos_embed.shape[1]:
+            pos_embed = self.pos_embed.reshape(
+                1, self.init_H, self.init_W, self.embed_dim
+            ).permute(0, 3, 1, 2)
+            pos_embed = F.interpolate(
+                pos_embed,
+                size=(self.H, self.W),
+                mode="bilinear",
+                align_corners=False,
+            ).flatten(2).transpose(1, 2)
+        else:
+            pos_embed = self.pos_embed
+
+        x = x + pos_embed
         return x
 
     def reshape_back(self, tokens: torch.Tensor) -> torch.Tensor:

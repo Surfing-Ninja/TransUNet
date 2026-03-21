@@ -14,6 +14,7 @@ class Config:
     momentum: float = 0.99
     weight_decay: float = 1e-4
     dropout: float = 0.1
+    fast_mode: bool = False  # Skip heavy augmentations for faster training
 
     # Swin Transformer
     window_size: int = 7          # Swin Transformer window size
