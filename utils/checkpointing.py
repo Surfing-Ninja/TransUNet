@@ -28,6 +28,11 @@ def save_checkpoint(
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
 
+    # Delete old periodic checkpoints to save disk space
+    import glob as _glob
+    for old in _glob.glob(os.path.join(checkpoint_dir, f"{dataset_name}_[0-9]*.pth")):
+        os.remove(old)
+
     ckpt = {
         "model_state_dict":     model.state_dict(),
         "optimizer_state_dict": optimizer.state_dict(),
