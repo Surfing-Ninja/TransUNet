@@ -8,7 +8,7 @@ import torch
 class Config:
     # Image and training
     image_size: int = 224
-    batch_size: int = 8
+    batch_size: int = 2
     num_epochs: int = 100
     learning_rate: float = 0.01
     momentum: float = 0.99
@@ -101,6 +101,8 @@ class Config:
         return preferred_path
 
     def __post_init__(self):
+        if self.is_kaggle:
+            self.is_colab = False
         # Auto-detect Colab by checking if Drive is mounted
         if os.path.isdir('/content/drive'):
             self.is_colab = True
@@ -115,7 +117,7 @@ class Config:
             self.base_data_dir = "/content/drive/MyDrive/datasets"
             self.checkpoint_dir = "/content/drive/MyDrive/mas_transunet_checkpoints"
         elif self.is_kaggle:
-            explicit_kaggle_data_root = "/kaggle/input/datasets"
+            explicit_kaggle_data_root = "/kaggle/input/datasets/mohitkhalote/transunet"
             if not os.path.isdir(explicit_kaggle_data_root):
                 raise FileNotFoundError(
                     f"Expected Kaggle dataset at {explicit_kaggle_data_root}. "

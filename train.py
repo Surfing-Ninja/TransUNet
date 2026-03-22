@@ -8,8 +8,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.cuda.amp import autocast, GradScaler
-from torch.utils.tensorboard import SummaryWriter
+from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from config import CFG
@@ -65,7 +64,7 @@ def train_one_epoch(
         filenames = batch["filename"]
 
         # Forward (AMP)
-        with autocast(enabled=device.startswith("cuda")):
+        if True:
             outputs = model(images, prev_masks)
 
             targets = {"mask": masks, "edge": edges}
@@ -73,9 +72,8 @@ def train_one_epoch(
 
         # Backward
         optimizer.zero_grad()
-        scaler.scale(total_loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        total_loss.backward()
+        optimizer.step()
 
         running_loss += total_loss.item()
         num_batches += 1
@@ -169,7 +167,10 @@ def train_single_dataset(
 
     # ---- TensorBoard -----------------------------------------------------
     log_dir = os.path.join(config.log_dir, dataset_name)
-    writer = SummaryWriter(log_dir=log_dir)
+    class _W:
+        def add_scalar(self,*a,**k): pass
+        def close(self): pass
+    writer = _W()
 
     # ---- Resume from checkpoint ------------------------------------------
     start_epoch, best_dice = load_latest_checkpoint(

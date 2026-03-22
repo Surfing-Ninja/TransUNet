@@ -62,8 +62,7 @@ class MaSLoss(nn.Module):
         target: torch.Tensor,
     ) -> torch.Tensor:
         """Primary segmentation loss (Eq. 6):  L_IoU + λ · L_BCE."""
-        return self._weighted_iou_loss(pred, target) + \
-               self.lambda_weight * self._weighted_bce_loss(pred, target)
+        return self._weighted_iou_loss(pred.float(), target.float())
 
     def _boundary_loss(
         self,
