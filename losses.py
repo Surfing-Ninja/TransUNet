@@ -47,14 +47,23 @@ class MaSLoss(nn.Module):
         pred: torch.Tensor,
         target: torch.Tensor,
     ) -> torch.Tensor:
-        """Binary cross-entropy loss.
+        """Class-weighted BCEWithLogits loss.
 
         Args:
-            pred:   (B, 1, H, W) probabilities in [0, 1]
+            pred:   (B, 1, H, W) logits
             target: (B, 1, H, W) binary {0, 1}
         """
-        pred = pred.clamp(1e-6, 1 - 1e-6)
-        return F.binary_cross_entropy(pred, target, reduction="mean")
+        target = target.float()
+        eps = 1e-6
+        pos_count = target.sum()
+        neg_count = target.numel() - pos_count
+        pos_weight = (neg_count / (pos_count + eps)).clamp(min=1.0)
+        return F.binary_cross_entropy_with_logits(
+            pred.float(),
+            target,
+            pos_weight=pos_weight,
+            reduction="mean",
+        )
 
     def _primary_loss(
         self,
@@ -63,10 +72,9 @@ class MaSLoss(nn.Module):
     ) -> torch.Tensor:
         """Primary segmentation loss (Eq. 6):  L_IoU + λ · L_BCE."""
         logits = pred.float()
-        probs = torch.sigmoid(logits) if not (pred.min() >= 0 and pred.max() <= 1) else pred.float()
+        probs = torch.sigmoid(logits)
         iou = self._weighted_iou_loss(probs, target.float())
-        pred_clamped = probs.clamp(1e-6, 1 - 1e-6)
-        bce = F.binary_cross_entropy(pred_clamped, target.float(), reduction="mean")
+        bce = self._weighted_bce_loss(logits, target.float())
         return iou + self.lambda_weight * bce
 
     def _boundary_loss(
@@ -97,12 +105,12 @@ class MaSLoss(nn.Module):
         target_size: tuple[int, int],
     ) -> torch.Tensor:
         """Resize a multi-channel deep-supervision feature map to
-        (B, 1, H, W) probabilities."""
+        (B, 1, H, W) logits."""
         # Channel-wise mean → single channel
         ds = ds.mean(dim=1, keepdim=True)                       # (B, 1, h, w)
         ds = F.interpolate(ds, size=target_size, mode="bilinear",
                            align_corners=False)                  # (B, 1, H, W)
-        return torch.sigmoid(ds)
+        return ds
 
     # ------------------------------------------------------------------
     # Forward
@@ -116,7 +124,7 @@ class MaSLoss(nn.Module):
         """
         Args:
             outputs: model output dict with keys
-                pred_mask (B, 1, H, W) sigmoid-activated
+                pred_mask (B, 1, H, W) raw logits
                 edge_map  (B, 1, H, W) raw logits
                 ds1       (B, C1, h1, w1)
                 ds2       (B, C2, h2, w2)

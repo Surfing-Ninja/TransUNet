@@ -98,7 +98,7 @@ class MaSDecoder(nn.Module):
 
         Returns:
             dict with keys:
-                pred_mask: (B, 1, H_in, W_in)  sigmoid-activated prediction
+                pred_mask: (B, 1, H_in, W_in)  raw logits
                 edge_map:  (B, 1, H_in, W_in)  raw logits (from encoder)
                 ds1:       deep supervision output 1 from BSTM
                 ds2:       deep supervision output 2 from SDM
@@ -130,7 +130,7 @@ class MaSDecoder(nn.Module):
         x, ds2 = self.sdm(x)                  # (B, 128, 56, 56), (B, 128, 56, 56)
 
         # ---- Segmentation head -------------------------------------------
-        pred_mask = torch.sigmoid(self.seg_head(x))   # (B, 1, 56, 56)
+        pred_mask = self.seg_head(x)   # (B, 1, 56, 56) logits
 
         # Upsample to input resolution
         target_size = encoder_outputs["edge_map"].shape[2:]

@@ -83,7 +83,7 @@ def train_one_epoch(
         batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
 
         # Update previous-epoch masks for FAM
-        pred_np = outputs["pred_mask"].detach().cpu().numpy()
+        pred_np = torch.sigmoid(outputs["pred_mask"]).detach().cpu().numpy()
         for i, fname in enumerate(filenames):
             # Store as uint8 (H, W) for memory efficiency
             mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
@@ -117,7 +117,7 @@ def validate(
             masks_np = batch["mask"].numpy()  # (B, 1, H, W)
 
             outputs = model(images, prev_masks)
-            preds = outputs["pred_mask"].cpu().numpy()  # (B, 1, H, W)
+            preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy()  # (B, 1, H, W)
 
             for i in range(preds.shape[0]):
                 pred_bin = (preds[i, 0] >= 0.5).astype(np.uint8)

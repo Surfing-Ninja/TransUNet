@@ -51,7 +51,7 @@ def iterative_refinement(
 
     for it in range(1, max_iters + 1):
         outputs = model(image, prev_mask)
-        pred_prob = outputs["pred_mask"]                        # (1, 1, H, W)
+        pred_prob = torch.sigmoid(outputs["pred_mask"])         # (1, 1, H, W)
         current_binary = (pred_prob.cpu().numpy()[0, 0] >= 0.5).astype(np.uint8)
 
         # Convergence check
