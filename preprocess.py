@@ -98,7 +98,10 @@ def preprocess_dataset(dataset_name: str) -> dict:
     Returns a summary dict with counts.
     """
     from dataset import _prepare_kaggle_working_split
-    _prepare_kaggle_working_split(dataset_name, CFG)
+    try:
+        _prepare_kaggle_working_split(dataset_name, CFG)
+    except Exception as exc:
+        print(f"  [{dataset_name}] warning: failed to prepare kaggle split: {exc}")
 
     paths = CFG.dataset_paths[dataset_name]
     summary: dict = {"name": dataset_name}

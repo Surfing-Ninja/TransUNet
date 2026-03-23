@@ -68,7 +68,7 @@ def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
         return
 
     img_files = sorted(
-        f for f in src_img_path.iterdir()
+        f for f in src_img_path.rglob("*")
         if f.is_file() and _is_supported_image(f.name)
     )
 
@@ -82,7 +82,7 @@ def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
         return s
 
     mask_by_stem: dict[str, Path] = {}
-    for mask_file in src_mask_path.iterdir():
+    for mask_file in src_mask_path.rglob("*"):
         if not mask_file.is_file() or not _is_supported_image(mask_file.name):
             continue
         mask_by_stem[mask_file.stem.lower()] = mask_file
@@ -90,6 +90,9 @@ def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
 
     pairs: list[tuple[Path, Path]] = []
     for image_file in img_files:
+        if dataset_name == "mri_glioma" and "_mask" in image_file.stem.lower():
+            continue
+
         mask_file = _find_file_by_stem(src_masks, image_file.stem)
         if mask_file is None:
             normalized = _normalize_stem(image_file.stem)
@@ -114,9 +117,10 @@ def _prepare_kaggle_working_split(dataset_name: str, config: Config) -> None:
     test_pairs = pairs[n_train:]
 
     def _copy_pairs(target_img_dir: Path, target_msk_dir: Path, selected_pairs: list[tuple[Path, Path]]) -> None:
-        for image_src, mask_src in selected_pairs:
-            shutil.copy2(image_src, target_img_dir / image_src.name)
-            shutil.copy2(mask_src, target_msk_dir / mask_src.name)
+        for pair_index, (image_src, mask_src) in enumerate(selected_pairs):
+            target_stem = f"{pair_index:05d}"
+            shutil.copy2(image_src, target_img_dir / f"{target_stem}{image_src.suffix}")
+            shutil.copy2(mask_src, target_msk_dir / f"{target_stem}{mask_src.suffix}")
 
     _copy_pairs(train_images_dir, train_masks_dir, train_pairs)
     _copy_pairs(test_images_dir, test_masks_dir, test_pairs)

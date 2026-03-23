@@ -11,6 +11,7 @@ class Config:
     batch_size: int = 2
     num_epochs: int = 100
     learning_rate: float = 0.01
+    eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
     dropout: float = 0.1

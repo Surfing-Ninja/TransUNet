@@ -48,6 +48,7 @@ def train_one_epoch(
     model.train()
     running_loss = 0.0
     num_batches = 0
+    accumulation_steps = 4
 
     batch_bar = tqdm(
         loader,
@@ -56,7 +57,9 @@ def train_one_epoch(
         unit="batch",
     )
 
-    for batch in batch_bar:
+    optimizer.zero_grad()
+
+    for batch_idx, batch in enumerate(batch_bar, start=1):
         images = batch["image"].to(device)
         masks = batch["mask"].to(device)
         edges = batch["edge"].to(device)
@@ -70,10 +73,13 @@ def train_one_epoch(
             targets = {"mask": masks, "edge": edges}
             total_loss, _ = criterion(outputs, targets)
 
-        # Backward
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
+        # Backward (gradient accumulation)
+        loss_for_backward = total_loss / accumulation_steps
+        loss_for_backward.backward()
+
+        if batch_idx % accumulation_steps == 0:
+            optimizer.step()
+            optimizer.zero_grad()
 
         running_loss += total_loss.item()
         num_batches += 1
@@ -85,6 +91,10 @@ def train_one_epoch(
             # Store as uint8 (H, W) for memory efficiency
             mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
             dataset.update_prev_mask(fname, mask_hw)
+
+    if num_batches > 0 and num_batches % accumulation_steps != 0:
+        optimizer.step()
+        optimizer.zero_grad()
 
     return running_loss / max(num_batches, 1)
 
@@ -150,7 +160,7 @@ def train_single_dataset(
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=config.num_epochs,
-        eta_min=1e-6,
+        eta_min=config.eta_min,
     )
     scaler = GradScaler(enabled=device.startswith("cuda"))
 
