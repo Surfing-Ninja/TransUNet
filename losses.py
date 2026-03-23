@@ -62,7 +62,12 @@ class MaSLoss(nn.Module):
         target: torch.Tensor,
     ) -> torch.Tensor:
         """Primary segmentation loss (Eq. 6):  L_IoU + λ · L_BCE."""
-        return self._weighted_iou_loss(pred.float(), target.float())
+        logits = pred.float()
+        probs = torch.sigmoid(logits) if not (pred.min() >= 0 and pred.max() <= 1) else pred.float()
+        iou = self._weighted_iou_loss(probs, target.float())
+        pred_clamped = probs.clamp(1e-6, 1 - 1e-6)
+        bce = F.binary_cross_entropy(pred_clamped, target.float(), reduction="mean")
+        return iou + self.lambda_weight * bce
 
     def _boundary_loss(
         self,

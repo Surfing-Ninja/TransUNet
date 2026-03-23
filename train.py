@@ -8,7 +8,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.amp import autocast, GradScaler
 from tqdm import tqdm
 
 from config import CFG
@@ -35,7 +34,6 @@ def train_one_epoch(
     loader,
     optimizer: optim.Optimizer,
     criterion: MaSLoss,
-    scaler: GradScaler,
     device: str,
     epoch: int,
     dataset: MedicalSegDataset,
@@ -66,12 +64,11 @@ def train_one_epoch(
         prev_masks = batch["prev_mask"].to(device)
         filenames = batch["filename"]
 
-        # Forward (AMP)
-        if True:
-            outputs = model(images, prev_masks)
+        # Forward (float32)
+        outputs = model(images, prev_masks)
 
-            targets = {"mask": masks, "edge": edges}
-            total_loss, _ = criterion(outputs, targets)
+        targets = {"mask": masks, "edge": edges}
+        total_loss, _ = criterion(outputs, targets)
 
         # Backward (gradient accumulation)
         loss_for_backward = total_loss / accumulation_steps
@@ -162,8 +159,6 @@ def train_single_dataset(
         T_max=config.num_epochs,
         eta_min=config.eta_min,
     )
-    scaler = GradScaler(enabled=device.startswith("cuda"))
-
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
 
@@ -206,7 +201,7 @@ def train_single_dataset(
     for epoch in epoch_bar:
         # Train
         train_loss = train_one_epoch(
-            model, train_loader, optimizer, criterion, scaler, device, epoch, train_dataset,
+            model, train_loader, optimizer, criterion, device, epoch, train_dataset,
         )
 
         # Validate every N epochs
