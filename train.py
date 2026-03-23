@@ -291,10 +291,24 @@ def main():
         action="store_true",
         help="Enable fast mode (skips heavy train augmentations).",
     )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Force local mode even if Kaggle is detected.",
+    )
+    parser.add_argument(
+        "--data-dir",
+        type=str,
+        default=None,
+        help="Absolute path to local datasets root (overrides base_data_dir).",
+    )
     args = parser.parse_args()
     dataset_spec = args.dataset_name
 
     config = CFG
+    if args.data_dir is not None and not os.path.isabs(args.data_dir):
+        raise ValueError("--data-dir must be an absolute path, e.g. /Users/name/datasets or C:/datasets")
+    config.configure_runtime(force_local=args.local, data_dir=args.data_dir)
     config.fast_mode = args.fast
     device = config.device
 

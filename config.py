@@ -1,4 +1,5 @@
 import os
+import sys
 from dataclasses import dataclass, field
 
 import torch
@@ -16,6 +17,7 @@ class Config:
     weight_decay: float = 1e-4
     dropout: float = 0.1
     fast_mode: bool = False  # Skip heavy augmentations for faster training
+    local_data_dir: str | None = None
 
     # Swin Transformer
     window_size: int = 7          # Swin Transformer window size
@@ -35,18 +37,14 @@ class Config:
     log_dir: str = "./logs"
 
     # Data loading
-    num_workers: int = field(
-        default_factory=lambda: 0
-        if ('COLAB_GPU' in os.environ or 'COLAB_RELEASE_TAG' in os.environ or os.path.isdir('/content/drive'))
-        else 4
-    )
+    num_workers: int = 4
 
     # Device
-    device: str = field(default_factory=lambda: "cuda" if torch.cuda.is_available() else "cpu")
+    device: str = "cpu"
 
     # Environment flag – set True when running on Google Colab
-    is_colab: bool = 'COLAB_GPU' in os.environ or 'COLAB_RELEASE_TAG' in os.environ
-    is_kaggle: bool = ('KAGGLE_KERNEL_RUN_TYPE' in os.environ) or os.path.isdir('/kaggle/input')
+    is_colab: bool = False
+    is_kaggle: bool = False
 
     # ------------------------------------------------------------------
     # Derived paths (resolved after init based on is_colab)
@@ -101,40 +99,43 @@ class Config:
 
         return preferred_path
 
-    def __post_init__(self):
+    @staticmethod
+    def _detect_kaggle() -> bool:
+        return ('KAGGLE_KERNEL_RUN_TYPE' in os.environ) or os.path.isdir('/kaggle/input')
+
+    @staticmethod
+    def _detect_colab() -> bool:
+        return (
+            'COLAB_GPU' in os.environ
+            or 'COLAB_RELEASE_TAG' in os.environ
+            or os.path.isdir('/content/drive')
+        )
+
+    @staticmethod
+    def _resolve_local_base_dir(local_data_dir: str | None) -> str:
+        if not local_data_dir:
+            return "./data"
+        return local_data_dir if os.path.isabs(local_data_dir) else os.path.abspath(local_data_dir)
+
+    @staticmethod
+    def _auto_batch_size() -> int:
+        if not torch.cuda.is_available():
+            return 2
+        total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        if total_memory_gb > 10:
+            return 8
+        if total_memory_gb >= 6:
+            return 4
+        return 2
+
+    def _auto_num_workers(self) -> int:
         if self.is_kaggle:
-            self.is_colab = False
-        # Auto-detect Colab by checking if Drive is mounted
-        if os.path.isdir('/content/drive'):
-            self.is_colab = True
+            return 0
+        if sys.platform.startswith("win"):
+            return 2
+        return 4
 
-        # Explicit worker policy:
-        # - Colab: 0 (Drive + OpenCV workers can hang)
-        # - Kaggle: 4
-        # - Local: 4
-        self.num_workers = 0 if self.is_colab else 4
-
-        if self.is_colab:
-            self.base_data_dir = "/content/drive/MyDrive/datasets"
-            self.checkpoint_dir = "/content/drive/MyDrive/mas_transunet_checkpoints"
-        elif self.is_kaggle:
-            explicit_kaggle_data_root = "/kaggle/input/datasets/mohitkhalote/transunet"
-            if not os.path.isdir(explicit_kaggle_data_root):
-                raise FileNotFoundError(
-                    f"Expected Kaggle dataset at {explicit_kaggle_data_root}. "
-                    "Attach that dataset path before running this notebook."
-                )
-            self.base_data_dir = explicit_kaggle_data_root
-            self.checkpoint_dir = "/kaggle/working/checkpoints"
-        else:
-            self.base_data_dir = "./data"
-            self.checkpoint_dir = "./checkpoints"
-
-        try:
-            os.makedirs(self.checkpoint_dir, exist_ok=True)
-        except OSError:
-            pass
-
+    def _build_dataset_paths(self) -> None:
         dataset_names = [
             "mri_glioma",
             "kvasir_seg",
@@ -223,17 +224,52 @@ class Config:
                 "test_masks":   "/kaggle/working/covid_ct/test/masks",
                 "test_edges":   os.path.join(edges_root, "covid_ct", "test"),
             }
+            return
+
+        edges_root = os.path.join(self.base_data_dir, "edges")
+        for name in dataset_names:
+            ds_root = os.path.join(self.base_data_dir, name)
+            self.dataset_paths[name] = {
+                "train_images": os.path.join(ds_root, "train", "images"),
+                "train_masks":  os.path.join(ds_root, "train", "masks"),
+                "train_edges":  os.path.join(edges_root, name, "train"),
+                "test_images":  os.path.join(ds_root, "test", "images"),
+                "test_masks":   os.path.join(ds_root, "test", "masks"),
+                "test_edges":   os.path.join(edges_root, name, "test"),
+            }
+
+    def configure_runtime(self, force_local: bool = False, data_dir: str | None = None) -> None:
+        if data_dir is not None:
+            self.local_data_dir = data_dir
+
+        kaggle_detected = self._detect_kaggle()
+        self.is_kaggle = kaggle_detected and not force_local
+        self.is_colab = self._detect_colab() and not self.is_kaggle
+
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.batch_size = self._auto_batch_size()
+        self.num_workers = self._auto_num_workers()
+
+        if self.is_kaggle:
+            explicit_kaggle_data_root = "/kaggle/input/datasets/mohitkhalote/transunet"
+            self.base_data_dir = explicit_kaggle_data_root
+            self.checkpoint_dir = "/kaggle/working/checkpoints"
+            self.log_dir = "/kaggle/working/logs"
         else:
-            for name in dataset_names:
-                ds_root = os.path.join(self.base_data_dir, name)
-                self.dataset_paths[name] = {
-                    "train_images": os.path.join(ds_root, "train", "images"),
-                    "train_masks":  os.path.join(ds_root, "train", "masks"),
-                    "train_edges":  os.path.join(ds_root, "train", "edges"),
-                    "test_images":  os.path.join(ds_root, "test", "images"),
-                    "test_masks":   os.path.join(ds_root, "test", "masks"),
-                    "test_edges":   os.path.join(ds_root, "test", "edges"),
-                }
+            self.base_data_dir = self._resolve_local_base_dir(self.local_data_dir)
+            self.checkpoint_dir = "./checkpoints"
+            self.log_dir = "./logs"
+
+        for output_dir in [self.checkpoint_dir, self.log_dir]:
+            try:
+                os.makedirs(output_dir, exist_ok=True)
+            except OSError:
+                pass
+
+        self._build_dataset_paths()
+
+    def __post_init__(self):
+        self.configure_runtime(force_local=False, data_dir=self.local_data_dir)
 
 
 CFG = Config()
