@@ -158,6 +158,19 @@ class MedicalSegDataset(Dataset):
             if f.is_file() and _is_supported_image(f.name)
         )
 
+        train_images_path = os.path.normpath(os.path.abspath(paths["train_images"]))
+        test_images_path = os.path.normpath(os.path.abspath(paths["test_images"]))
+        if train_images_path == test_images_path:
+            shuffled_filenames = self.filenames[:]
+            rng = random.Random(42)
+            rng.shuffle(shuffled_filenames)
+
+            split_idx = int(0.9 * len(shuffled_filenames))
+            if self.split == "train":
+                self.filenames = shuffled_filenames[:split_idx]
+            else:
+                self.filenames = shuffled_filenames[split_idx:]
+
         # Stores the previous epoch's predicted mask (numpy uint8 H×W)
         # keyed by filename.  Populated via update_prev_mask().
         self.prev_masks: dict[str, np.ndarray] = {}
