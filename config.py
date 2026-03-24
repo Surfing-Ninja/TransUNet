@@ -11,13 +11,17 @@ class Config:
     image_size: int = 224
     batch_size: int = 2
     num_epochs: int = 100
-    learning_rate: float = 0.01
+    learning_rate: float = 1e-4
+    accumulation_steps: int = 4
+    fam_warmup_epochs: int = 3
     eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
     dropout: float = 0.1
     fast_mode: bool = False  # Skip heavy augmentations for faster training
     local_data_dir: str | None = None
+    apply_low_content_filter: bool = True
+    min_foreground_ratio: float = 0.01
 
     # Swin Transformer
     window_size: int = 7          # Swin Transformer window size

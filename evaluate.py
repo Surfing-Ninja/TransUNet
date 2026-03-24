@@ -164,9 +164,8 @@ def evaluate_dataset(dataset_name: str, checkpoint_path: str) -> None:
                 gt_bin = (masks_np[i, 0] >= 0.5).astype(np.uint8)
                 metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
                 metrics["iters_used"] = iters_used
-                metrics["filename"] = filenames[i]
                 aggregator.update(metrics)
-                per_sample_records.append(metrics)
+                per_sample_records.append({**metrics, "filename": filenames[i]})
 
                 # Save qualitative examples
                 sample_idx = idx * images.shape[0] + i

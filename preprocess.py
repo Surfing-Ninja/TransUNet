@@ -92,6 +92,32 @@ def filter_low_content_pairs(
     return kept, filtered
 
 
+def _apply_filtered_pairs(
+    images_dir: str,
+    masks_dir: str,
+    filtered_images: list[str],
+) -> int:
+    images_path = Path(images_dir)
+    masks_path = Path(masks_dir)
+    removed = 0
+
+    for img_name in filtered_images:
+        img_path = images_path / img_name
+        if img_path.exists():
+            img_path.unlink()
+
+        stem = Path(img_name).stem
+        for ext in IMAGE_EXTS:
+            mask_path = masks_path / f"{stem}{ext}"
+            if mask_path.exists():
+                mask_path.unlink()
+                break
+
+        removed += 1
+
+    return removed
+
+
 def preprocess_dataset(dataset_name: str) -> dict:
     """Run full preprocessing for a single dataset.
 
@@ -115,12 +141,17 @@ def preprocess_dataset(dataset_name: str) -> dict:
         summary["train_kept"] = len(kept)
         summary["train_filtered"] = len(filtered)
         if filtered:
+            removed = _apply_filtered_pairs(paths["train_images"], paths["train_masks"], filtered)
+            summary["train_removed"] = removed
+        if filtered:
             print(f"  [{dataset_name}] train: {len(filtered)}/{summary['train_total']} "
                   f"pairs below foreground threshold")
+            print(f"  [{dataset_name}] train: removed {summary['train_removed']} low-content pairs")
     else:
         summary["train_total"] = 0
         summary["train_kept"] = 0
         summary["train_filtered"] = 0
+        summary["train_removed"] = 0
         print(f"  [{dataset_name}] train directories not found – skipping filter")
 
     # --- Filter low-content pairs (test split) ----------------------------
@@ -132,12 +163,17 @@ def preprocess_dataset(dataset_name: str) -> dict:
         summary["test_kept"] = len(kept_test)
         summary["test_filtered"] = len(filtered_test)
         if filtered_test:
+            removed = _apply_filtered_pairs(paths["test_images"], paths["test_masks"], filtered_test)
+            summary["test_removed"] = removed
+        if filtered_test:
             print(f"  [{dataset_name}] test:  {len(filtered_test)}/{summary['test_total']} "
                   f"pairs below foreground threshold")
+            print(f"  [{dataset_name}] test:  removed {summary['test_removed']} low-content pairs")
     else:
         summary["test_total"] = 0
         summary["test_kept"] = 0
         summary["test_filtered"] = 0
+        summary["test_removed"] = 0
         print(f"  [{dataset_name}] test directories not found – skipping filter")
 
     # --- Generate edge maps (train) ---------------------------------------

@@ -20,6 +20,12 @@ def _is_supported_image(filename: str) -> bool:
     return filename.lower().endswith(IMAGE_EXTS)
 
 
+def _to_binary_uint8(mask_like: np.ndarray) -> np.ndarray:
+    arr = mask_like.astype(np.float32)
+    threshold = 0.5 if arr.max() <= 1.0 else 127.0
+    return (arr >= threshold).astype(np.uint8) * 255
+
+
 def _find_file_by_stem(directory: str, stem: str) -> str | None:
     d = Path(directory)
     if not d.is_dir():
@@ -148,6 +154,11 @@ class MedicalSegDataset(Dataset):
         self.masks_dir = paths[f"{split}_masks"]
         self.edges_dir = paths[f"{split}_edges"]
 
+        if not os.path.isdir(self.images_dir):
+            raise FileNotFoundError(f"Image directory not found: {self.images_dir}")
+        if not os.path.isdir(self.masks_dir):
+            raise FileNotFoundError(f"Mask directory not found: {self.masks_dir}")
+
         if config.is_kaggle:
             self.edges_dir = f"/kaggle/working/edges/{dataset_name}/{split}"
             os.makedirs(self.edges_dir, exist_ok=True)
@@ -170,6 +181,43 @@ class MedicalSegDataset(Dataset):
                 self.filenames = shuffled_filenames[:split_idx]
             else:
                 self.filenames = shuffled_filenames[split_idx:]
+
+        paired_filenames: list[str] = []
+        missing_mask_filenames: list[str] = []
+        for filename in self.filenames:
+            if self._find_file(self.masks_dir, Path(filename).stem) is None:
+                missing_mask_filenames.append(filename)
+            else:
+                paired_filenames.append(filename)
+        self.filenames = paired_filenames
+
+        if missing_mask_filenames:
+            print(
+                f"[{self.dataset_name}:{self.split}] skipped {len(missing_mask_filenames)} images without matching masks"
+            )
+
+        min_fg_ratio = float(getattr(self.config, "min_foreground_ratio", 0.01))
+        apply_filter = bool(getattr(self.config, "apply_low_content_filter", True))
+        if apply_filter and self.split == "train":
+            filtered_filenames: list[str] = []
+            for filename in self.filenames:
+                mask_path = self._find_file(self.masks_dir, Path(filename).stem)
+                if mask_path is None:
+                    continue
+                mask_img = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                if mask_img is None:
+                    continue
+                fg_ratio = float(np.count_nonzero(mask_img > 127)) / float(mask_img.size)
+                if fg_ratio >= min_fg_ratio:
+                    filtered_filenames.append(filename)
+
+            removed_count = len(self.filenames) - len(filtered_filenames)
+            self.filenames = filtered_filenames
+            if removed_count > 0:
+                print(
+                    f"[{self.dataset_name}:{self.split}] removed {removed_count} low-content masks "
+                    f"(fg_ratio < {min_fg_ratio})"
+                )
 
         # Stores the previous epoch's predicted mask (numpy uint8 H×W)
         # keyed by filename.  Populated via update_prev_mask().
@@ -251,6 +299,13 @@ class MedicalSegDataset(Dataset):
             prev_mask = transformed["prev_mask"]
         else:
             image = image.astype(np.float32) / 255.0
+            mean = np.array(IMAGENET_MEAN, dtype=np.float32).reshape(1, 1, 3)
+            std = np.array(IMAGENET_STD, dtype=np.float32).reshape(1, 1, 3)
+            image = (image - mean) / std
+
+        mask = _to_binary_uint8(mask)
+        edge = _to_binary_uint8(edge)
+        prev_mask = _to_binary_uint8(prev_mask)
 
         # --- Convert to tensors -------------------------------------------
         if isinstance(image, np.ndarray):
@@ -264,6 +319,10 @@ class MedicalSegDataset(Dataset):
         prev_mask = torch.from_numpy(
             prev_mask.astype(np.float32) / 255.0
         ).unsqueeze(0)
+
+        mask = (mask >= 0.5).float()
+        edge = (edge >= 0.5).float()
+        prev_mask = (prev_mask >= 0.5).float()
 
         return {
             "image": image,
@@ -306,8 +365,16 @@ def get_train_transforms(fast_mode: bool = False) -> A.Compose:
         A.PadIfNeeded(min_height=256, min_width=256),
         A.RandomCrop(height=224, width=224),
         A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.3),
-        A.Rotate(limit=30, p=0.5),
+        A.VerticalFlip(p=0.5),
+        A.RandomRotate90(p=0.5),
+        A.RandomBrightnessContrast(p=0.2),
+        A.ShiftScaleRotate(
+            shift_limit=0.0625,
+            scale_limit=0.1,
+            rotate_limit=30,
+            p=0.5,
+            border_mode=cv2.BORDER_REFLECT_101,
+        ),
     ]
 
     if not fast_mode:
@@ -321,7 +388,6 @@ def get_train_transforms(fast_mode: bool = False) -> A.Compose:
 
     transforms.extend(
         [
-            A.RandomBrightnessContrast(p=0.4),
             A.RandomGamma(p=0.3),
             A.CLAHE(p=0.3),
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
@@ -390,7 +456,7 @@ def get_dataloaders(
         shuffle=True,
         num_workers=config.num_workers,
         pin_memory=pin_memory,
-        drop_last=True,
+        drop_last=False,
     )
     test_loader = DataLoader(
         test_ds,

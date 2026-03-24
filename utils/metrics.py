@@ -173,7 +173,21 @@ class MetricAggregator:
         keys = self._records[0].keys()
         result = {}
         for k in keys:
-            vals = np.array([r[k] for r in self._records])
+            numeric_vals: list[float] = []
+            for r in self._records:
+                if k not in r:
+                    continue
+                try:
+                    value = float(r[k])
+                except (TypeError, ValueError):
+                    continue
+                if np.isfinite(value):
+                    numeric_vals.append(value)
+
+            if not numeric_vals:
+                continue
+
+            vals = np.array(numeric_vals, dtype=np.float64)
             result[k] = (float(vals.mean()), float(vals.std()))
         return result
 

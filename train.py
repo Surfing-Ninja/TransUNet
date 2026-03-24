@@ -37,6 +37,8 @@ def train_one_epoch(
     device: str,
     epoch: int,
     dataset: MedicalSegDataset,
+    accumulation_steps: int,
+    fam_warmup_epochs: int,
 ) -> float:
     """Run one training epoch.
 
@@ -46,7 +48,6 @@ def train_one_epoch(
     model.train()
     running_loss = 0.0
     num_batches = 0
-    accumulation_steps = 4
 
     batch_bar = tqdm(
         loader,
@@ -56,6 +57,8 @@ def train_one_epoch(
     )
 
     optimizer.zero_grad()
+
+    use_fam_feedback = epoch >= fam_warmup_epochs
 
     for batch_idx, batch in enumerate(batch_bar, start=1):
         images = batch["image"].to(device)
@@ -82,12 +85,11 @@ def train_one_epoch(
         num_batches += 1
         batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
 
-        # Update previous-epoch masks for FAM
-        pred_np = torch.sigmoid(outputs["pred_mask"]).detach().cpu().numpy()
-        for i, fname in enumerate(filenames):
-            # Store as uint8 (H, W) for memory efficiency
-            mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
-            dataset.update_prev_mask(fname, mask_hw)
+        if use_fam_feedback:
+            pred_np = torch.sigmoid(outputs["pred_mask"]).detach().cpu().numpy()
+            for i, fname in enumerate(filenames):
+                mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
+                dataset.update_prev_mask(fname, mask_hw)
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
         optimizer.step()
@@ -114,15 +116,16 @@ def validate(
         for batch in loader:
             images = batch["image"].to(device)
             prev_masks = batch["prev_mask"].to(device)
-            masks_np = batch["mask"].numpy()  # (B, 1, H, W)
+            masks_np = batch["mask"].cpu().numpy().astype(np.float32)  # (B, 1, H, W)
 
             outputs = model(images, prev_masks)
-            preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy()  # (B, 1, H, W)
+            preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy().astype(np.float32)  # (B, 1, H, W)
 
             for i in range(preds.shape[0]):
                 pred_bin = (preds[i, 0] >= 0.5).astype(np.uint8)
                 gt_bin = (masks_np[i, 0] >= 0.5).astype(np.uint8)
                 metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
+                print(type(metrics["dice"]), metrics["dice"])
                 aggregator.update(metrics)
 
     stats = aggregator.mean_std()
@@ -141,6 +144,8 @@ def train_single_dataset(
     """Train and evaluate a single dataset. Returns best Dice score."""
     print(f"\n{'='*70}")
     print(f"  DATASET: {dataset_name:15s}  |  batch_size={config.batch_size}  num_workers={config.num_workers}")
+    print(f"  accumulation_steps={config.accumulation_steps}  effective_batch_size={config.batch_size * config.accumulation_steps}")
+    print(f"  fam_warmup_epochs={config.fam_warmup_epochs}")
     print(f"{'='*70}\n")
 
     # ---- Model -----------------------------------------------------------
@@ -201,7 +206,15 @@ def train_single_dataset(
     for epoch in epoch_bar:
         # Train
         train_loss = train_one_epoch(
-            model, train_loader, optimizer, criterion, device, epoch, train_dataset,
+            model,
+            train_loader,
+            optimizer,
+            criterion,
+            device,
+            epoch,
+            train_dataset,
+            config.accumulation_steps,
+            config.fam_warmup_epochs,
         )
 
         # Validate every N epochs
@@ -306,6 +319,9 @@ def main():
     config.configure_runtime(force_local=args.local, data_dir=args.data_dir)
     config.fast_mode = args.fast
     device = config.device
+
+    if device == "cpu":
+        print("[WARNING] Training is running on CPU. This is slow and may hurt convergence; use a CUDA GPU when possible.")
 
     # Determine which datasets to train on
     all_datasets = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
