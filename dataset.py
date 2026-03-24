@@ -456,7 +456,7 @@ def get_dataloaders(
         shuffle=True,
         num_workers=config.num_workers,
         pin_memory=pin_memory,
-        drop_last=False,
+            drop_last=True,
     )
     test_loader = DataLoader(
         test_ds,

@@ -128,7 +128,7 @@ class Config:
         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         if total_memory_gb > 20:
             return 8
-        if total_memory_gb >= 12:
+        if total_memory_gb >= 10:
             return 4
         return 2
 
