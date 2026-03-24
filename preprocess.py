@@ -1,6 +1,7 @@
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
 import os
+import errno
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
 import argparse
 from pathlib import Path
@@ -18,6 +19,14 @@ def _is_supported_image(filename: str) -> bool:
     return filename.lower().endswith(IMAGE_EXTS)
 
 ALL_DATASETS = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
+
+
+def _is_kaggle_input_path(path: Path) -> bool:
+    try:
+        resolved = str(path.resolve())
+    except Exception:
+        resolved = str(path)
+    return resolved == "/kaggle/input" or resolved.startswith("/kaggle/input/")
 
 
 def generate_edge_maps(masks_dir: str, edges_dir: str) -> int:
@@ -99,21 +108,48 @@ def _apply_filtered_pairs(
 ) -> int:
     images_path = Path(images_dir)
     masks_path = Path(masks_dir)
+
+    if _is_kaggle_input_path(images_path) or _is_kaggle_input_path(masks_path):
+        print(
+            "  [preprocess] skipping physical removal of low-content pairs "
+            f"(kaggle input is read-only): images={images_dir}, masks={masks_dir}"
+        )
+        return 0
+
+    if not os.access(images_path, os.W_OK) or not os.access(masks_path, os.W_OK):
+        print(
+            "  [preprocess] skipping physical removal of low-content pairs "
+            f"(read-only path): images={images_dir}, masks={masks_dir}"
+        )
+        return 0
+
     removed = 0
 
     for img_name in filtered_images:
+        pair_removed = False
         img_path = images_path / img_name
         if img_path.exists():
-            img_path.unlink()
+            try:
+                img_path.unlink()
+                pair_removed = True
+            except OSError as exc:
+                if exc.errno not in {errno.EROFS, errno.EPERM, errno.EACCES}:
+                    raise
 
         stem = Path(img_name).stem
         for ext in IMAGE_EXTS:
             mask_path = masks_path / f"{stem}{ext}"
             if mask_path.exists():
-                mask_path.unlink()
+                try:
+                    mask_path.unlink()
+                    pair_removed = True
+                except OSError as exc:
+                    if exc.errno not in {errno.EROFS, errno.EPERM, errno.EACCES}:
+                        raise
                 break
 
-        removed += 1
+        if pair_removed:
+            removed += 1
 
     return removed
 
