@@ -242,6 +242,75 @@ class Config:
                 "test_edges":   os.path.join(edges_root, name, "test"),
             }
 
+        # Local fallback: kvasir_seg may be arranged as
+        # data/kvasir_seg/kvasir-seg/{images,masks} without train/test folders.
+        kvasir_root = os.path.join(self.base_data_dir, "kvasir_seg")
+        kvasir_paths = self.dataset_paths["kvasir_seg"]
+        if not os.path.isdir(kvasir_paths["train_images"]):
+            seg_root = self._find_existing_subdir(
+                kvasir_root,
+                ["kvasir-seg", "kvasir_seg", "kvasir seg"],
+            )
+            sessile_root = self._find_existing_subdir(
+                kvasir_root,
+                ["kvasir-sessile", "kvasir_sessile", "kvasir sessile"],
+            )
+
+            seg_images = self._find_existing_subdir(seg_root, ["images", "Images"]) if seg_root else None
+            seg_masks = self._find_existing_subdir(seg_root, ["masks", "Masks"]) if seg_root else None
+
+            sessile_images = self._find_existing_subdir(sessile_root, ["images", "Images"]) if sessile_root else None
+            sessile_masks = self._find_existing_subdir(sessile_root, ["masks", "Masks"]) if sessile_root else None
+
+            fallback_images = seg_images or sessile_images
+            fallback_masks = seg_masks or sessile_masks
+
+            if fallback_images and fallback_masks:
+                # Prefer:
+                # train -> kvasir-seg
+                # test  -> kvasir-sessile (if available), else same as train
+                train_images = seg_images or fallback_images
+                train_masks = seg_masks or fallback_masks
+                test_images = sessile_images or train_images
+                test_masks = sessile_masks or train_masks
+
+                self.dataset_paths["kvasir_seg"] = {
+                    "train_images": train_images,
+                    "train_masks":  train_masks,
+                    "train_edges":  os.path.join(edges_root, "kvasir_seg", "train"),
+                    "test_images":  test_images,
+                    "test_masks":   test_masks,
+                    "test_edges":   os.path.join(edges_root, "kvasir_seg", "test"),
+                }
+
+        # Local fallback: mri_glioma may be arranged under a Brain_MRI folder
+        # (possibly nested) without train/test folders.
+        mri_root = os.path.join(self.base_data_dir, "mri_glioma")
+        mri_paths = self.dataset_paths["mri_glioma"]
+        if not os.path.isdir(mri_paths["train_images"]):
+            brain_mri_root = self._find_existing_subdir(
+                mri_root,
+                ["Brain_MRI", "Brain MRI", "brain_mri", "brain-mri", "BrainMRI"],
+            ) or self._find_first_matching_subdir(mri_root, ["brain", "mri", "glioma"]) or mri_root
+
+            mri_images = self._find_existing_subdir(brain_mri_root, ["images", "Images"]) \
+                or self._find_first_matching_subdir(brain_mri_root, ["image", "t1", "flair"]) \
+                or brain_mri_root
+            mri_masks = self._find_existing_subdir(brain_mri_root, ["masks", "Masks", "mask", "Mask"]) \
+                or self._find_first_matching_subdir(brain_mri_root, ["mask", "seg", "label"]) \
+                or brain_mri_root
+
+            if os.path.isdir(mri_images) and os.path.isdir(mri_masks):
+                shared_edges = os.path.join(edges_root, "mri_glioma")
+                self.dataset_paths["mri_glioma"] = {
+                    "train_images": mri_images,
+                    "train_masks":  mri_masks,
+                    "train_edges":  shared_edges,
+                    "test_images":  mri_images,
+                    "test_masks":   mri_masks,
+                    "test_edges":   shared_edges,
+                }
+
     def configure_runtime(self, force_local: bool = False, data_dir: str | None = None) -> None:
         if data_dir is not None:
             self.local_data_dir = data_dir
