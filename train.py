@@ -69,21 +69,17 @@ def train_one_epoch(
         prev_masks = batch["prev_mask"].to(device)
         filenames = batch["filename"]
 
-        # Forward (mixed precision)
+        # Forward + loss (both inside autocast per PyTorch AMP docs)
         with autocast("cuda", enabled=device.startswith("cuda")):
             outputs = model(images, prev_masks)
-
-        # Loss in float32 for numerical stability
-        targets = {"mask": masks, "edge": edges}
-        total_loss, _ = criterion(outputs, targets)
+            targets = {"mask": masks, "edge": edges}
+            total_loss, _ = criterion(outputs, targets)
 
         # Backward (gradient accumulation with AMP)
         loss_for_backward = total_loss / accumulation_steps
         scaler.scale(loss_for_backward).backward()
 
         if batch_idx % accumulation_steps == 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -99,8 +95,6 @@ def train_one_epoch(
                 dataset.update_prev_mask(fname, mask_hw)
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad()
@@ -179,7 +173,11 @@ def train_single_dataset(
     model = build_model(config)
 
     # ---- AMP scaler ------------------------------------------------------
-    scaler = GradScaler("cuda", enabled=device.startswith("cuda"))
+    # init_scale=256 avoids the default 65536 which causes fp16 gradient
+    # overflow → GradScaler silently skips optimizer steps with SGD.
+    scaler = GradScaler(
+        "cuda", enabled=device.startswith("cuda"), init_scale=256,
+    )
 
     # ---- Optimizer / scheduler -------------------------------------------
     optimizer = optim.SGD(
