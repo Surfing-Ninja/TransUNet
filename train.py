@@ -80,6 +80,8 @@ def train_one_epoch(
         scaler.scale(loss_for_backward).backward()
 
         if batch_idx % accumulation_steps == 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad()
@@ -101,6 +103,8 @@ def train_one_epoch(
                 dataset.update_prev_mask(fname, mask_hw)
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
         optimizer.zero_grad()

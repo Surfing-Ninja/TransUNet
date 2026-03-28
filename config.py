@@ -11,9 +11,9 @@ class Config:
     image_size: int = 224
     batch_size: int = 2
     num_epochs: int = 100
-    learning_rate: float = 0.005
+    learning_rate: float = 0.01
     accumulation_steps: int = 4
-    fam_warmup_epochs: int = 100  # use Otsu masks throughout (disables feedback loop)
+    fam_warmup_epochs: int = 3
     eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
@@ -27,7 +27,7 @@ class Config:
     window_size: int = 7          # Swin Transformer window size
     num_heads: int = 8            # attention heads
     swin_rstm_depth: int = 6      # number of STBs in RSTM
-    swin_bstm_depth: int = 4      # number of STBs in BSTM
+    swin_bstm_depth: int = 12     # number of STBs in BSTM
     swin_sdm_depth: int = 4       # number of STBs in SDM
 
     # Loss
