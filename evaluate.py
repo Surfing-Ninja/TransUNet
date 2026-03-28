@@ -50,7 +50,8 @@ def iterative_refinement(
     prev_binary: np.ndarray | None = None
 
     for it in range(1, max_iters + 1):
-        outputs = model(image, prev_mask)
+        with torch.autocast("cuda", enabled=device.startswith("cuda")):
+            outputs = model(image, prev_mask)
         pred_prob = torch.sigmoid(outputs["pred_mask"])         # (1, 1, H, W)
         current_binary = (pred_prob.cpu().numpy()[0, 0] >= 0.5).astype(np.uint8)
 

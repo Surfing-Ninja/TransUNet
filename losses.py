@@ -57,7 +57,7 @@ class MaSLoss(nn.Module):
         eps = 1e-6
         pos_count = target.sum()
         neg_count = target.numel() - pos_count
-        pos_weight = (neg_count / (pos_count + eps)).clamp(min=1.0)
+        pos_weight = (neg_count / (pos_count + eps)).clamp(min=1.0).reshape(1)
         return F.binary_cross_entropy_with_logits(
             pred.float(),
             target,

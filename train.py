@@ -127,7 +127,8 @@ def validate(
             prev_masks = batch["prev_mask"].to(device)
             masks_np = batch["mask"].cpu().numpy().astype(np.float32)  # (B, 1, H, W)
 
-            outputs = model(images, prev_masks)
+            with autocast("cuda", enabled=device.startswith("cuda")):
+                outputs = model(images, prev_masks)
             preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy().astype(np.float32)  # (B, 1, H, W)
 
             for i in range(preds.shape[0]):
