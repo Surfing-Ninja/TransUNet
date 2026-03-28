@@ -118,7 +118,7 @@ class FAM(nn.Module):
 
         # Step 1 – generate current binary mask from features
         current_soft = self.mask_generator(feature_map)            # (B, 1, H, W)
-        current_binary_mask = current_soft  # keep soft mask for gradient flow
+        current_binary_mask = (current_soft >= 0.5).float()        # (B, 1, H, W)
 
         # Step 2 – resize previous mask to feature resolution
         prev_mask_resized = F.interpolate(

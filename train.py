@@ -73,7 +73,7 @@ def train_one_epoch(
         with autocast("cuda", enabled=device.startswith("cuda")):
             outputs = model(images, prev_masks)
             targets = {"mask": masks, "edge": edges}
-            total_loss, _ = criterion(outputs, targets)
+            total_loss, loss_dict = criterion(outputs, targets)
 
         # Backward (gradient accumulation with AMP)
         loss_for_backward = total_loss / accumulation_steps
@@ -87,6 +87,12 @@ def train_one_epoch(
         running_loss += total_loss.item()
         num_batches += 1
         batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
+
+        # Log loss components and AMP scale periodically
+        if batch_idx % 50 == 0:
+            ld = {k: f"{v.item():.3f}" for k, v in loss_dict.items()}
+            scale = f"{scaler.get_scale():.0f}" if scaler.is_enabled() else "off"
+            tqdm.write(f"  [e{epoch+1} b{batch_idx}] {ld}  scale={scale}")
 
         if use_fam_feedback:
             pred_np = torch.sigmoid(outputs["pred_mask"]).detach().cpu().numpy()
