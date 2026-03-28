@@ -178,23 +178,16 @@ def train_single_dataset(
     # ---- Model -----------------------------------------------------------
     model = build_model(config)
 
-    # torch.compile for free 10-20% speedup (PyTorch 2.0+)
-    try:
-        if hasattr(torch, "compile"):
-            import torch._dynamo
-            torch._dynamo.config.suppress_errors = True
-            model = torch.compile(model)
-    except Exception:
-        pass
-
     # ---- AMP scaler ------------------------------------------------------
     scaler = GradScaler("cuda", enabled=device.startswith("cuda"))
 
     # ---- Optimizer / scheduler -------------------------------------------
-    optimizer = optim.AdamW(
+    optimizer = optim.SGD(
         model.parameters(),
         lr=config.learning_rate,
+        momentum=config.momentum,
         weight_decay=config.weight_decay,
+        nesterov=True,
     )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
