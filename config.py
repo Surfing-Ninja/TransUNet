@@ -13,7 +13,7 @@ class Config:
     num_epochs: int = 100
     learning_rate: float = 0.01
     accumulation_steps: int = 4
-    fam_warmup_epochs: int = 3
+    fam_warmup_epochs: int = 1
     eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
@@ -251,35 +251,16 @@ class Config:
                 kvasir_root,
                 ["kvasir-seg", "kvasir_seg", "kvasir seg"],
             )
-            sessile_root = self._find_existing_subdir(
-                kvasir_root,
-                ["kvasir-sessile", "kvasir_sessile", "kvasir sessile"],
-            )
-
             seg_images = self._find_existing_subdir(seg_root, ["images", "Images"]) if seg_root else None
             seg_masks = self._find_existing_subdir(seg_root, ["masks", "Masks"]) if seg_root else None
 
-            sessile_images = self._find_existing_subdir(sessile_root, ["images", "Images"]) if sessile_root else None
-            sessile_masks = self._find_existing_subdir(sessile_root, ["masks", "Masks"]) if sessile_root else None
-
-            fallback_images = seg_images or sessile_images
-            fallback_masks = seg_masks or sessile_masks
-
-            if fallback_images and fallback_masks:
-                # Prefer:
-                # train -> kvasir-seg
-                # test  -> kvasir-sessile (if available), else same as train
-                train_images = seg_images or fallback_images
-                train_masks = seg_masks or fallback_masks
-                test_images = sessile_images or train_images
-                test_masks = sessile_masks or train_masks
-
+            if seg_images and seg_masks:
                 self.dataset_paths["kvasir_seg"] = {
-                    "train_images": train_images,
-                    "train_masks":  train_masks,
+                    "train_images": seg_images,
+                    "train_masks":  seg_masks,
                     "train_edges":  os.path.join(edges_root, "kvasir_seg", "train"),
-                    "test_images":  test_images,
-                    "test_masks":   test_masks,
+                    "test_images":  seg_images,
+                    "test_masks":   seg_masks,
                     "test_edges":   os.path.join(edges_root, "kvasir_seg", "test"),
                 }
 

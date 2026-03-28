@@ -198,7 +198,8 @@ class MedicalSegDataset(Dataset):
 
         min_fg_ratio = float(getattr(self.config, "min_foreground_ratio", 0.01))
         apply_filter = bool(getattr(self.config, "apply_low_content_filter", True))
-        if apply_filter and self.split == "train":
+        datasets_with_filter = {"mri_glioma", "covid_ct"}
+        if apply_filter and self.split == "train" and self.dataset_name in datasets_with_filter:
             filtered_filenames: list[str] = []
             for filename in self.filenames:
                 mask_path = self._find_file(self.masks_dir, Path(filename).stem)
@@ -365,34 +366,16 @@ def get_train_transforms(fast_mode: bool = False) -> A.Compose:
         A.PadIfNeeded(min_height=256, min_width=256),
         A.RandomCrop(height=224, width=224),
         A.HorizontalFlip(p=0.5),
-        A.VerticalFlip(p=0.5),
-        A.RandomRotate90(p=0.5),
-        A.RandomBrightnessContrast(p=0.2),
-        A.ShiftScaleRotate(
-            shift_limit=0.0625,
-            scale_limit=0.1,
-            rotate_limit=30,
-            p=0.5,
-            border_mode=cv2.BORDER_REFLECT_101,
-        ),
+        A.VerticalFlip(p=0.3),
+        A.Rotate(limit=30, p=0.5),
+        A.ElasticTransform(p=0.3),
+        A.GridDistortion(p=0.3),
+        A.OpticalDistortion(p=0.2),
+        A.RandomBrightnessContrast(p=0.4),
+        A.RandomGamma(p=0.3),
+        A.CLAHE(p=0.3),
+        A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ]
-
-    if not fast_mode:
-        transforms.extend(
-            [
-                A.ElasticTransform(p=0.3),
-                A.GridDistortion(p=0.3),
-                A.OpticalDistortion(p=0.2),
-            ]
-        )
-
-    transforms.extend(
-        [
-            A.RandomGamma(p=0.3),
-            A.CLAHE(p=0.3),
-            A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
-        ]
-    )
 
     return A.Compose(
         transforms,

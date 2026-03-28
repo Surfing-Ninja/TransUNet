@@ -69,11 +69,11 @@ def train_one_epoch(
         prev_masks = batch["prev_mask"].to(device)
         filenames = batch["filename"]
 
-        # Forward + loss (both inside autocast per PyTorch AMP docs)
+        # Forward in autocast, loss in float32
         with autocast("cuda", enabled=device.startswith("cuda")):
             outputs = model(images, prev_masks)
-            targets = {"mask": masks, "edge": edges}
-            total_loss, loss_dict = criterion(outputs, targets)
+        targets = {"mask": masks, "edge": edges}
+        total_loss, loss_dict = criterion(outputs, targets)
 
         # Backward (gradient accumulation with AMP)
         loss_for_backward = total_loss / accumulation_steps
@@ -198,19 +198,10 @@ def train_single_dataset(
         weight_decay=config.weight_decay,
         nesterov=True,
     )
-    warmup_epochs = 5
-    warmup_scheduler = optim.lr_scheduler.LinearLR(
-        optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs,
-    )
-    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=config.num_epochs - warmup_epochs,
+        T_max=config.num_epochs,
         eta_min=config.eta_min,
-    )
-    scheduler = optim.lr_scheduler.SequentialLR(
-        optimizer,
-        schedulers=[warmup_scheduler, cosine_scheduler],
-        milestones=[warmup_epochs],
     )
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)

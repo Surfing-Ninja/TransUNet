@@ -19,6 +19,7 @@ def _is_supported_image(filename: str) -> bool:
     return filename.lower().endswith(IMAGE_EXTS)
 
 ALL_DATASETS = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
+FILTERED_DATASETS = {"mri_glioma", "covid_ct"}
 
 
 def _is_kaggle_input_path(path: Path) -> bool:
@@ -101,6 +102,26 @@ def filter_low_content_pairs(
     return kept, filtered
 
 
+def _count_pairs(images_dir: str, masks_dir: str) -> int:
+    images_path = Path(images_dir)
+    masks_path = Path(masks_dir)
+    if not images_path.is_dir() or not masks_path.is_dir():
+        return 0
+
+    mask_lookup = {
+        f.stem: f.name for f in masks_path.iterdir()
+        if f.is_file() and _is_supported_image(f.name)
+    }
+
+    count = 0
+    for image_file in images_path.iterdir():
+        if not image_file.is_file() or not _is_supported_image(image_file.name):
+            continue
+        if image_file.stem in mask_lookup:
+            count += 1
+    return count
+
+
 def _apply_filtered_pairs(
     images_dir: str,
     masks_dir: str,
@@ -170,19 +191,26 @@ def preprocess_dataset(dataset_name: str) -> dict:
 
     # --- Filter low-content pairs (train split) --------------------------
     if os.path.isdir(paths["train_images"]) and os.path.isdir(paths["train_masks"]):
-        kept, filtered = filter_low_content_pairs(
-            paths["train_images"], paths["train_masks"]
-        )
-        summary["train_total"] = len(kept) + len(filtered)
-        summary["train_kept"] = len(kept)
-        summary["train_filtered"] = len(filtered)
-        if filtered:
-            removed = _apply_filtered_pairs(paths["train_images"], paths["train_masks"], filtered)
-            summary["train_removed"] = removed
-        if filtered:
-            print(f"  [{dataset_name}] train: {len(filtered)}/{summary['train_total']} "
-                  f"pairs below foreground threshold")
-            print(f"  [{dataset_name}] train: removed {summary['train_removed']} low-content pairs")
+        if dataset_name in FILTERED_DATASETS:
+            kept, filtered = filter_low_content_pairs(
+                paths["train_images"], paths["train_masks"]
+            )
+            summary["train_total"] = len(kept) + len(filtered)
+            summary["train_kept"] = len(kept)
+            summary["train_filtered"] = len(filtered)
+            if filtered:
+                removed = _apply_filtered_pairs(paths["train_images"], paths["train_masks"], filtered)
+                summary["train_removed"] = removed
+            if filtered:
+                print(f"  [{dataset_name}] train: {len(filtered)}/{summary['train_total']} "
+                      f"pairs below foreground threshold")
+                print(f"  [{dataset_name}] train: removed {summary['train_removed']} low-content pairs")
+        else:
+            total_pairs = _count_pairs(paths["train_images"], paths["train_masks"])
+            summary["train_total"] = total_pairs
+            summary["train_kept"] = total_pairs
+            summary["train_filtered"] = 0
+            summary["train_removed"] = 0
     else:
         summary["train_total"] = 0
         summary["train_kept"] = 0
@@ -192,19 +220,26 @@ def preprocess_dataset(dataset_name: str) -> dict:
 
     # --- Filter low-content pairs (test split) ----------------------------
     if os.path.isdir(paths["test_images"]) and os.path.isdir(paths["test_masks"]):
-        kept_test, filtered_test = filter_low_content_pairs(
-            paths["test_images"], paths["test_masks"]
-        )
-        summary["test_total"] = len(kept_test) + len(filtered_test)
-        summary["test_kept"] = len(kept_test)
-        summary["test_filtered"] = len(filtered_test)
-        if filtered_test:
-            removed = _apply_filtered_pairs(paths["test_images"], paths["test_masks"], filtered_test)
-            summary["test_removed"] = removed
-        if filtered_test:
-            print(f"  [{dataset_name}] test:  {len(filtered_test)}/{summary['test_total']} "
-                  f"pairs below foreground threshold")
-            print(f"  [{dataset_name}] test:  removed {summary['test_removed']} low-content pairs")
+        if dataset_name in FILTERED_DATASETS:
+            kept_test, filtered_test = filter_low_content_pairs(
+                paths["test_images"], paths["test_masks"]
+            )
+            summary["test_total"] = len(kept_test) + len(filtered_test)
+            summary["test_kept"] = len(kept_test)
+            summary["test_filtered"] = len(filtered_test)
+            if filtered_test:
+                removed = _apply_filtered_pairs(paths["test_images"], paths["test_masks"], filtered_test)
+                summary["test_removed"] = removed
+            if filtered_test:
+                print(f"  [{dataset_name}] test:  {len(filtered_test)}/{summary['test_total']} "
+                      f"pairs below foreground threshold")
+                print(f"  [{dataset_name}] test:  removed {summary['test_removed']} low-content pairs")
+        else:
+            total_pairs = _count_pairs(paths["test_images"], paths["test_masks"])
+            summary["test_total"] = total_pairs
+            summary["test_kept"] = total_pairs
+            summary["test_filtered"] = 0
+            summary["test_removed"] = 0
     else:
         summary["test_total"] = 0
         summary["test_kept"] = 0

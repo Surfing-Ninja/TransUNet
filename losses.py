@@ -154,9 +154,7 @@ class MaSLoss(nn.Module):
         ds2_pred = self._prepare_ds(outputs["ds2"], target_size)
         lds2 = self._primary_loss(ds2_pred, gt_mask)
 
-        # Total loss (Eq. 8) – deep supervision scaled down to reduce
-        # gradient noise from coarse (7×7) and fine (56×56) features.
-        total_loss = lp + lb + 0.4 * lds1 + 0.4 * lds2
+        total_loss = lp + lb + lds1 + lds2
 
         loss_dict = {
             "Lp":   lp.detach(),
