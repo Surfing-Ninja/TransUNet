@@ -104,13 +104,13 @@ class MaSLoss(nn.Module):
         ds: torch.Tensor,
         target_size: tuple[int, int],
     ) -> torch.Tensor:
-        """Resize a multi-channel deep-supervision feature map to
-        (B, 1, H, W) logits."""
-        # Channel-wise mean → single channel
-        ds = ds.mean(dim=1, keepdim=True)                       # (B, 1, h, w)
-        ds = F.interpolate(ds, size=target_size, mode="bilinear",
-                           align_corners=False)                  # (B, 1, H, W)
-        return ds
+        """Resize single-channel deep-supervision logits to target size."""
+        return F.interpolate(
+            ds.float(),
+            size=target_size,
+            mode="bilinear",
+            align_corners=False,
+        )
 
     # ------------------------------------------------------------------
     # Forward
@@ -126,8 +126,8 @@ class MaSLoss(nn.Module):
             outputs: model output dict with keys
                 pred_mask (B, 1, H, W) raw logits
                 edge_map  (B, 1, H, W) raw logits
-                ds1       (B, C1, h1, w1)
-                ds2       (B, C2, h2, w2)
+                ds1       (B, 1, h1, w1) raw logits
+                ds2       (B, 1, h2, w2) raw logits
             targets: dict with keys
                 mask  (B, 1, H, W) binary ground-truth mask
                 edge  (B, 1, H, W) ground-truth edge map

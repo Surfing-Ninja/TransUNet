@@ -87,6 +87,14 @@ class MaSDecoder(nn.Module):
         # ---- Segmentation head -------------------------------------------
         self.seg_head = nn.Conv2d(128, 1, kernel_size=1)
 
+        # ---- Deep-supervision heads --------------------------------------
+        self.ds1_head = nn.Sequential(
+            nn.Conv2d(1024, 1, kernel_size=1),
+        )
+        self.ds2_head = nn.Sequential(
+            nn.Conv2d(128, 1, kernel_size=1),
+        )
+
     def forward(
         self,
         encoder_outputs: dict[str, torch.Tensor],
@@ -133,6 +141,10 @@ class MaSDecoder(nn.Module):
         # ---- Segmentation head -------------------------------------------
         pred_mask = self.seg_head(x)   # (B, 1, 56, 56) logits
 
+        # ---- Deep supervision heads --------------------------------------
+        ds1_out = self.ds1_head(ds1)   # (B, 1, 7, 7) logits
+        ds2_out = self.ds2_head(ds2)   # (B, 1, 56, 56) logits
+
         # Upsample to input resolution
         target_size = encoder_outputs["edge_map"].shape[2:]
         pred_mask = F.interpolate(
@@ -142,6 +154,6 @@ class MaSDecoder(nn.Module):
         return {
             "pred_mask": pred_mask,
             "edge_map": encoder_outputs["edge_map"],
-            "ds1":      ds1,
-            "ds2":      ds2,
+            "ds1":      ds1_out,
+            "ds2":      ds2_out,
         }
