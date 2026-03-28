@@ -188,10 +188,19 @@ def train_single_dataset(
         weight_decay=config.weight_decay,
         nesterov=True,
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    warmup_epochs = 5
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_epochs,
+    )
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=config.num_epochs,
+        T_max=config.num_epochs - warmup_epochs,
         eta_min=config.eta_min,
+    )
+    scheduler = optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs],
     )
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
