@@ -191,12 +191,10 @@ def train_single_dataset(
     scaler = GradScaler("cuda", enabled=device.startswith("cuda"))
 
     # ---- Optimizer / scheduler -------------------------------------------
-    optimizer = optim.SGD(
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
-        momentum=config.momentum,
         weight_decay=config.weight_decay,
-        nesterov=True,
     )
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
