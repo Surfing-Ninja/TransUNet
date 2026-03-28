@@ -181,6 +181,8 @@ def train_single_dataset(
     # torch.compile for free 10-20% speedup (PyTorch 2.0+)
     try:
         if hasattr(torch, "compile"):
+            import torch._dynamo
+            torch._dynamo.config.suppress_errors = True
             model = torch.compile(model)
     except Exception:
         pass
