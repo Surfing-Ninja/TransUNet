@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.amp import autocast, GradScaler
 import torch.optim as optim
 from tqdm import tqdm
 
@@ -34,6 +35,7 @@ def train_one_epoch(
     loader,
     optimizer: optim.Optimizer,
     criterion: MaSLoss,
+    scaler: GradScaler,
     device: str,
     epoch: int,
     dataset: MedicalSegDataset,
@@ -67,18 +69,23 @@ def train_one_epoch(
         prev_masks = batch["prev_mask"].to(device)
         filenames = batch["filename"]
 
-        # Forward (float32)
-        outputs = model(images, prev_masks)
+        # Forward (mixed precision)
+        with autocast("cuda", enabled=device.startswith("cuda")):
+            outputs = model(images, prev_masks)
 
+        # Loss in float32 for numerical stability
         targets = {"mask": masks, "edge": edges}
         total_loss, _ = criterion(outputs, targets)
 
-        # Backward (gradient accumulation)
+        # Backward (gradient accumulation with AMP)
         loss_for_backward = total_loss / accumulation_steps
-        loss_for_backward.backward()
+        scaler.scale(loss_for_backward).backward()
 
         if batch_idx % accumulation_steps == 0:
-            optimizer.step()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad()
 
         running_loss += total_loss.item()
@@ -92,7 +99,10 @@ def train_one_epoch(
                 dataset.update_prev_mask(fname, mask_hw)
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
-        optimizer.step()
+        scaler.unscale_(optimizer)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
         optimizer.zero_grad()
 
     return running_loss / max(num_batches, 1)
@@ -103,8 +113,13 @@ def validate(
     loader,
     aggregator: MetricAggregator,
     device: str,
+    full_metrics: bool = True,
 ) -> float:
     """Run validation / test evaluation.
+
+    Args:
+        full_metrics: If True, compute the full metric suite (Hausdorff,
+            SSIM, S-measure, etc.).  If False, compute only Dice for speed.
 
     Returns:
         Mean Dice score across all samples.
@@ -124,8 +139,20 @@ def validate(
             for i in range(preds.shape[0]):
                 pred_bin = (preds[i, 0] >= 0.5).astype(np.uint8)
                 gt_bin = (masks_np[i, 0] >= 0.5).astype(np.uint8)
-                metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
-                print(type(metrics["dice"]), metrics["dice"])
+
+                if full_metrics:
+                    metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
+                else:
+                    # Fast Dice-only computation
+                    eps = 1e-6
+                    pred_f = pred_bin.astype(np.float64)
+                    gt_f = gt_bin.astype(np.float64)
+                    tp = np.sum(pred_f * gt_f)
+                    fp = np.sum(pred_f * (1 - gt_f))
+                    fn = np.sum((1 - pred_f) * gt_f)
+                    dice = (2 * tp) / (2 * tp + fp + fn + eps)
+                    metrics = {"dice": float(dice)}
+
                 aggregator.update(metrics)
 
     stats = aggregator.mean_std()
@@ -150,6 +177,16 @@ def train_single_dataset(
 
     # ---- Model -----------------------------------------------------------
     model = build_model(config)
+
+    # torch.compile for free 10-20% speedup (PyTorch 2.0+)
+    try:
+        if hasattr(torch, "compile"):
+            model = torch.compile(model)
+    except Exception:
+        pass
+
+    # ---- AMP scaler ------------------------------------------------------
+    scaler = GradScaler("cuda", enabled=device.startswith("cuda"))
 
     # ---- Optimizer / scheduler -------------------------------------------
     optimizer = optim.SGD(
@@ -210,6 +247,7 @@ def train_single_dataset(
             train_loader,
             optimizer,
             criterion,
+            scaler,
             device,
             epoch,
             train_dataset,
@@ -221,7 +259,9 @@ def train_single_dataset(
         run_validation = (epoch + 1) % val_interval == 0
         val_dice = None
         if run_validation:
-            val_dice = validate(model, test_loader, aggregator, device)
+            validation_count = (epoch + 1) // val_interval
+            full_metrics = (validation_count % 3 == 0)
+            val_dice = validate(model, test_loader, aggregator, device, full_metrics)
 
         # Scheduler step
         scheduler.step()

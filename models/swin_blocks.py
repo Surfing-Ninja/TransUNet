@@ -131,6 +131,7 @@ class BSTM(nn.Module):
         num_heads: int = 8,
         window_size: int = 7,
         input_resolution: tuple[int, int] = (7, 7),
+        depth: int = 12,
     ):
         super().__init__()
         self.input_resolution = input_resolution
@@ -144,7 +145,7 @@ class BSTM(nn.Module):
                 window_size=window_size,
                 shift_size=0 if (i % 2 == 0) else window_size // 2,
             )
-            for i in range(12)
+            for i in range(depth)
         ])
 
         self.channel_reduce = nn.Conv2d(dim, dim // 2, kernel_size=3, padding=1)

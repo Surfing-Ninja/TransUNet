@@ -27,7 +27,7 @@ class Config:
     window_size: int = 7          # Swin Transformer window size
     num_heads: int = 8            # attention heads
     swin_rstm_depth: int = 6      # number of STBs in RSTM
-    swin_bstm_depth: int = 12     # number of STBs in BSTM
+    swin_bstm_depth: int = 4      # number of STBs in BSTM
     swin_sdm_depth: int = 4       # number of STBs in SDM
 
     # Loss

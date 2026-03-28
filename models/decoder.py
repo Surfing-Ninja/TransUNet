@@ -52,6 +52,7 @@ class MaSDecoder(nn.Module):
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(7, 7),
+            depth=config.swin_bstm_depth,
         )
 
         # ---- Decoder blocks (concat channels → output channels) ----------
