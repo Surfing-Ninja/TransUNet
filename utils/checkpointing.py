@@ -13,6 +13,8 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_dice,
 
     ckpt = {
         "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
         "epoch": epoch,
         "best_dice": best_dice,
         "dataset_name": dataset_name,
@@ -39,7 +41,16 @@ def load_latest_checkpoint(model, optimizer, scheduler, dataset_name, checkpoint
 
     ckpt = torch.load(latest, map_location="cpu", weights_only=False)
     model.load_state_dict(ckpt["model_state_dict"])
-    # optimizer and scheduler not saved to reduce file size
+
+    # Backward-compatible: older checkpoints may not contain these states.
+    optimizer_state = ckpt.get("optimizer_state_dict")
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
+
+    scheduler_state = ckpt.get("scheduler_state_dict")
+    if scheduler_state is not None:
+        scheduler.load_state_dict(scheduler_state)
+
     return ckpt["epoch"] + 1, ckpt.get("best_dice", 0.0)
 
 

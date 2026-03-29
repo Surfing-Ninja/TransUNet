@@ -118,12 +118,18 @@ def validate(
     aggregator: MetricAggregator,
     device: str,
     full_metrics: bool = True,
+    fam_refine_iters: int = 1,
+    val_dataset: MedicalSegDataset | None = None,
 ) -> float:
     """Run validation / test evaluation.
 
     Args:
         full_metrics: If True, compute the full metric suite (Hausdorff,
             SSIM, S-measure, etc.).  If False, compute only Dice for speed.
+        fam_refine_iters: Number of additional feedback refinement passes
+            during validation (1 means total 2 forward passes).
+        val_dataset: Validation dataset to update with latest predicted
+            masks so subsequent epochs do not restart from Otsu masks.
 
     Returns:
         Mean Dice score across all samples.
@@ -135,11 +141,22 @@ def validate(
         for batch in loader:
             images = batch["image"].to(device)
             prev_masks = batch["prev_mask"].to(device)
+            filenames = batch["filename"]
             masks_np = batch["mask"].cpu().numpy().astype(np.float32)  # (B, 1, H, W)
 
-            with autocast("cuda", enabled=device.startswith("cuda")):
-                outputs = model(images, prev_masks)
+            # Validation feedback refinement to avoid stale Otsu-only prev masks.
+            num_passes = max(1, fam_refine_iters + 1)
+            for _ in range(num_passes):
+                with autocast("cuda", enabled=device.startswith("cuda")):
+                    outputs = model(images, prev_masks)
+                prev_masks = torch.sigmoid(outputs["pred_mask"]).detach()
+
             preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy().astype(np.float32)  # (B, 1, H, W)
+
+            if val_dataset is not None:
+                pred_uint8 = (preds[:, 0] >= 0.5).astype(np.uint8) * 255
+                for i, fname in enumerate(filenames):
+                    val_dataset.update_prev_mask(fname, pred_uint8[i])
 
             for i in range(preds.shape[0]):
                 pred_bin = (preds[i, 0] >= 0.5).astype(np.uint8)
@@ -263,7 +280,15 @@ def train_single_dataset(
         if run_validation:
             validation_count = (epoch + 1) // val_interval
             full_metrics = (validation_count % 3 == 0)
-            val_dice = validate(model, test_loader, aggregator, device, full_metrics)
+            val_dice = validate(
+                model,
+                test_loader,
+                aggregator,
+                device,
+                full_metrics=full_metrics,
+                fam_refine_iters=1,
+                val_dataset=test_loader.dataset,
+            )
 
         # Scheduler step
         scheduler.step()

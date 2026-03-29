@@ -50,7 +50,7 @@ class MaSDecoder(nn.Module):
         self.bstm = BSTM(
             dim=2048,
             num_heads=config.num_heads,
-            window_size=config.window_size,
+            window_size=min(config.window_size, 4),
             input_resolution=(7, 7),
             depth=config.swin_bstm_depth,
         )

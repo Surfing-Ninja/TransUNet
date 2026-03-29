@@ -137,13 +137,19 @@ class BSTM(nn.Module):
         self.input_resolution = input_resolution
         self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
 
+        # If the attention window covers the full bottleneck spatial map,
+        # shifted-window attention becomes degenerate (single-window case).
+        # Use non-shifted attention for all blocks in this regime.
+        min_res = min(input_resolution)
+        use_shift = window_size < min_res
+
         self.blocks = nn.ModuleList([
             SwinTransformerBlock(
                 dim=dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
-                shift_size=0 if (i % 2 == 0) else window_size // 2,
+                shift_size=0 if ((i % 2 == 0) or (not use_shift)) else window_size // 2,
             )
             for i in range(depth)
         ])

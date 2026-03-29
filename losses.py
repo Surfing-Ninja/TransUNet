@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
+from scipy.ndimage import distance_transform_edt
 
 
 class MaSLoss(nn.Module):
@@ -57,7 +59,7 @@ class MaSLoss(nn.Module):
         eps = 1e-6
         pos_count = target.sum()
         neg_count = target.numel() - pos_count
-        pos_weight = (neg_count / (pos_count + eps)).clamp(min=1.0).reshape(1)
+        pos_weight = (neg_count / (pos_count + eps)).clamp(min=1.0, max=20.0).reshape(1)
         return F.binary_cross_entropy_with_logits(
             pred.float(),
             target,
@@ -82,18 +84,40 @@ class MaSLoss(nn.Module):
         pred_edge: torch.Tensor,
         gt_edge: torch.Tensor,
     ) -> torch.Tensor:
-        """Boundary loss (Eq. 7, Kervadec 2021).
+        """Distance-transform boundary loss (Kervadec-style supervision).
 
         Args:
             pred_edge: (B, 1, H, W) edge probability map
             gt_edge:   (B, 1, H, W) ground-truth edge probability map
 
-        Converts both maps to distance-like representations (1 − map)
-        and returns the mean squared L2 distance.
+        Uses an EDT map of the GT edges to penalize false positives farther
+        away from the true boundary, plus a recall term on true edge pixels.
+        This keeps gradients informative even for sparse edge maps.
         """
-        pred_dist = 1.0 - pred_edge
-        gt_dist = 1.0 - gt_edge
-        return ((pred_dist - gt_dist) ** 2).mean()
+        gt_edge = (gt_edge >= 0.5).float()
+
+        with torch.no_grad():
+            gt_np = gt_edge.detach().cpu().numpy()
+            dist_maps = []
+            for i in range(gt_np.shape[0]):
+                edge_i = gt_np[i, 0] > 0.5
+                if edge_i.any():
+                    dist_i = distance_transform_edt(~edge_i).astype(np.float32)
+                    max_dist = float(dist_i.max())
+                    if max_dist > 0.0:
+                        dist_i = dist_i / max_dist
+                else:
+                    dist_i = np.zeros_like(gt_np[i, 0], dtype=np.float32)
+                dist_maps.append(dist_i)
+
+            dist_map = torch.from_numpy(np.stack(dist_maps, axis=0)).to(
+                device=pred_edge.device,
+                dtype=pred_edge.dtype,
+            ).unsqueeze(1)
+
+        false_positive_term = (pred_edge * (1.0 - gt_edge) * dist_map).mean()
+        false_negative_term = ((1.0 - pred_edge) * gt_edge).mean()
+        return false_positive_term + false_negative_term
 
     # ------------------------------------------------------------------
     # Helpers for deep supervision

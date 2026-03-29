@@ -116,9 +116,8 @@ class FAM(nn.Module):
         """
         _, _, H, W = feature_map.shape
 
-        # Step 1 – generate current binary mask from features
+        # Step 1 – generate current soft mask from features
         current_soft = self.mask_generator(feature_map)            # (B, 1, H, W)
-        current_binary_mask = (current_soft >= 0.5).float()        # (B, 1, H, W)
 
         # Step 2 – resize previous mask to feature resolution
         prev_mask_resized = F.interpolate(
@@ -128,8 +127,8 @@ class FAM(nn.Module):
             align_corners=False,
         )  # (B, 1, H, W)
 
-        # Step 3 – union of current and previous masks
-        union_mask = torch.maximum(current_binary_mask, prev_mask_resized)  # (B, 1, H, W)
+        # Step 3 – differentiable union of current and previous masks
+        union_mask = torch.maximum(current_soft, prev_mask_resized)  # (B, 1, H, W)
 
         # Step 4 – enhance features with union mask
         enhanced_features = union_mask * feature_map               # (B, C, H, W)
