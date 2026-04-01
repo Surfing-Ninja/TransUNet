@@ -162,18 +162,24 @@ def validate(
                 pred_bin = (preds[i, 0] >= 0.5).astype(np.uint8)
                 gt_bin = (masks_np[i, 0] >= 0.5).astype(np.uint8)
 
+                # Soft Dice is smoother than thresholded Dice and better for
+                # tracking incremental validation improvements.
+                eps = 1e-6
+                pred_soft = preds[i, 0].astype(np.float64)
+                gt_soft = masks_np[i, 0].astype(np.float64)
+                inter_soft = np.sum(pred_soft * gt_soft)
+                denom_soft = np.sum(pred_soft) + np.sum(gt_soft)
+                soft_dice = float((2.0 * inter_soft + eps) / (denom_soft + eps))
+
                 if full_metrics:
                     metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
+                    metrics["dice"] = soft_dice
+                    metrics["dice_bin"] = float(
+                        (2.0 * np.sum(pred_bin * gt_bin))
+                        / (np.sum(pred_bin) + np.sum(gt_bin) + eps)
+                    )
                 else:
-                    # Fast Dice-only computation
-                    eps = 1e-6
-                    pred_f = pred_bin.astype(np.float64)
-                    gt_f = gt_bin.astype(np.float64)
-                    tp = np.sum(pred_f * gt_f)
-                    fp = np.sum(pred_f * (1 - gt_f))
-                    fn = np.sum((1 - pred_f) * gt_f)
-                    dice = (2 * tp) / (2 * tp + fp + fn + eps)
-                    metrics = {"dice": float(dice)}
+                    metrics = {"dice": soft_dice}
 
                 aggregator.update(metrics)
 
@@ -274,9 +280,8 @@ def train_single_dataset(
             config.fam_warmup_epochs,
         )
 
-        # Validate every N epochs
-        # Validate every epoch for first 20 epochs, then every 2 epochs.
-        run_validation = (epoch < 20) or ((epoch + 1) % 2 == 0)
+        # Validate every epoch for smoother best-Dice tracking.
+        run_validation = True
         val_dice = None
         if run_validation:
             validation_count = (epoch + 1)

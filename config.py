@@ -13,7 +13,7 @@ class Config:
     num_epochs: int = 100
     learning_rate: float = 0.01
     accumulation_steps: int = 4
-    fam_warmup_epochs: int = 1
+    fam_warmup_epochs: int = 5
     eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
