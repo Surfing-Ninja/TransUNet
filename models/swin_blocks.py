@@ -113,6 +113,7 @@ class RSTM(nn.Module):
     def __init__(
         self,
         dim: int,
+        embed_dim: int | None = None,
         num_heads: int = 8,
         window_size: int = 7,
         input_resolution: tuple[int, int] = (56, 56),
@@ -120,11 +121,12 @@ class RSTM(nn.Module):
     ):
         super().__init__()
         self.input_resolution = input_resolution
-        self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
+        self.embed_dim = embed_dim or dim
+        self.patch_embed = PatchEmbedding(dim, self.embed_dim, input_resolution)
 
         self.blocks = nn.ModuleList([
             _build_swin_block(
-                dim=dim,
+                dim=self.embed_dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
@@ -134,12 +136,12 @@ class RSTM(nn.Module):
             for i in range(6)
         ])
 
-        self.proj = nn.Linear(dim, dim)
+        self.proj = nn.Linear(self.embed_dim, self.embed_dim)
+        self.out_proj = nn.Conv2d(self.embed_dim, dim, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """x: (B, C, H, W) → (B, C, H, W)"""
         tokens = self.patch_embed(x)           # (B, N, D)
-        residual = tokens
         H, W = self.patch_embed.H, self.patch_embed.W
 
         out = _tokens_to_spatial(tokens, H, W)  # (B, H, W, D)
@@ -148,9 +150,9 @@ class RSTM(nn.Module):
         out = _spatial_to_tokens(out)            # (B, N, D)
 
         out = self.proj(out)                   # (B, N, D)
-        out = out + residual                   # residual connection
         out = self.patch_embed.reshape_back(out)
-        return out
+        out = self.out_proj(out)
+        return out + x
 
 
 class BSTM(nn.Module):
@@ -167,6 +169,7 @@ class BSTM(nn.Module):
     def __init__(
         self,
         dim: int,
+        embed_dim: int | None = None,
         num_heads: int = 8,
         window_size: int = 7,
         input_resolution: tuple[int, int] = (7, 7),
@@ -175,11 +178,12 @@ class BSTM(nn.Module):
     ):
         super().__init__()
         self.input_resolution = input_resolution
-        self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
+        self.embed_dim = embed_dim or dim
+        self.patch_embed = PatchEmbedding(dim, self.embed_dim, input_resolution)
 
         self.blocks = nn.ModuleList([
             _build_swin_block(
-                dim=dim,
+                dim=self.embed_dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
@@ -189,7 +193,7 @@ class BSTM(nn.Module):
             for i in range(depth)
         ])
 
-        self.channel_reduce = nn.Conv2d(dim, dim // 2, kernel_size=3, padding=1)
+        self.channel_reduce = nn.Conv2d(self.embed_dim, dim // 2, kernel_size=3, padding=1)
         self.upsample = nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -202,7 +206,7 @@ class BSTM(nn.Module):
             out = blk(out)
         out = _spatial_to_tokens(out)
 
-        out = self.patch_embed.reshape_back(out)     # (B, dim, H, W)
+        out = self.patch_embed.reshape_back(out)     # (B, embed_dim, H, W)
         ds1 = self.channel_reduce(out)               # (B, dim//2, H, W)
         upsampled = self.upsample(ds1)               # (B, dim//2, 2H, 2W)
         return upsampled, ds1
@@ -222,6 +226,7 @@ class SDM(nn.Module):
         self,
         dim: int,
         out_dim: int,
+        embed_dim: int | None = None,
         num_heads: int = 8,
         window_size: int = 7,
         input_resolution: tuple[int, int] = (14, 14),
@@ -229,11 +234,12 @@ class SDM(nn.Module):
     ):
         super().__init__()
         self.input_resolution = input_resolution
-        self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
+        self.embed_dim = embed_dim or dim
+        self.patch_embed = PatchEmbedding(dim, self.embed_dim, input_resolution)
 
         self.blocks = nn.ModuleList([
             _build_swin_block(
-                dim=dim,
+                dim=self.embed_dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
@@ -242,6 +248,8 @@ class SDM(nn.Module):
             )
             for i in range(4)
         ])
+
+        self.ds2_proj = nn.Conv2d(self.embed_dim, dim, kernel_size=1)
 
         self.conv1 = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, padding=1),
@@ -264,8 +272,9 @@ class SDM(nn.Module):
             out = blk(out)
         out = _spatial_to_tokens(out)
 
-        out = self.patch_embed.reshape_back(out)  # (B, dim, H, W)
-        ds2 = out                                 # deep supervision tap
+        out = self.patch_embed.reshape_back(out)  # (B, embed_dim, H, W)
+        ds2 = self.ds2_proj(out)                  # (B, dim, H, W)
+        out = ds2
         out = self.conv1(out)
         conv_out = self.conv2(out)                # (B, out_dim, H, W)
         return conv_out, ds2

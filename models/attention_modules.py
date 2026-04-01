@@ -123,16 +123,24 @@ class FAM(nn.Module):
         """
         _, _, H, W = feature_map.shape
 
-        # Step 1 – generate current soft mask and threshold to binary
+        # Step 1 – generate current soft mask
         current_soft = self.mask_generator(feature_map)            # (B, 1, H, W)
-        current_binary = (current_soft >= 0.5).float()            # (B, 1, H, W)
 
-        # Step 2 – resize previous mask with max-pooling style reduction
-        prev_mask_resized = F.adaptive_max_pool2d(prev_mask.float(), output_size=(H, W))
-        prev_mask_binary = (prev_mask_resized >= 0.5).float()     # (B, 1, H, W)
-
-        # Step 3 – union mask
-        union_mask = torch.maximum(current_binary, prev_mask_binary)  # (B, 1, H, W)
+        # Training keeps the feedback path differentiable; inference follows
+        # the hard-thresholded mask flow described in the report.
+        if self.training:
+            prev_mask_resized = F.interpolate(
+                prev_mask.float(),
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )
+            union_mask = torch.maximum(current_soft, prev_mask_resized)
+        else:
+            current_binary = (current_soft >= 0.5).float()
+            prev_mask_resized = F.adaptive_max_pool2d(prev_mask.float(), output_size=(H, W))
+            prev_mask_binary = (prev_mask_resized >= 0.5).float()
+            union_mask = torch.maximum(current_binary, prev_mask_binary)
 
         # Step 4 – enhance features with union mask
         enhanced_features = union_mask * feature_map               # (B, C, H, W)

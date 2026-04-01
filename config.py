@@ -11,10 +11,10 @@ class Config:
     image_size: int = 224
     batch_size: int = 2
     num_epochs: int = 100
-    learning_rate: float = 1e-5
+    learning_rate: float = 0.01
     accumulation_steps: int = 4
     fam_warmup_epochs: int = 1
-    eta_min: float = 1e-6
+    eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
     dropout: float = 0.2
@@ -29,6 +29,8 @@ class Config:
     swin_rstm_depth: int = 6      # number of STBs in RSTM
     swin_bstm_depth: int = 12     # number of STBs in BSTM
     swin_sdm_depth: int = 4       # number of STBs in SDM
+    rstm_embed_dims: tuple[int, int, int] = (128, 256, 512)
+    bstm_embed_dim: int = 528
 
     # Loss
     lambda_weight: float = 1.0    # BCE weight in primary loss
