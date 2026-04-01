@@ -6,6 +6,13 @@ from models.swin_blocks import BSTM, SDM
 from models.attention_modules import FAM
 
 
+def _group_norm(num_channels: int) -> nn.GroupNorm:
+    groups = min(32, num_channels)
+    while num_channels % groups != 0:
+        groups -= 1
+    return nn.GroupNorm(groups, num_channels)
+
+
 class DecoderBlock(nn.Module):
     """Two successive 3×3 Conv + BN + ReLU blocks that first concatenate
     the upsampled features with the skip connection."""
@@ -14,12 +21,12 @@ class DecoderBlock(nn.Module):
         super().__init__()
         self.conv1 = nn.Sequential(
             nn.Conv2d(in_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            _group_norm(out_channels),
             nn.ReLU(inplace=True),
         )
         self.conv2 = nn.Sequential(
             nn.Conv2d(out_channels, out_channels, 3, padding=1),
-            nn.BatchNorm2d(out_channels),
+            _group_norm(out_channels),
             nn.ReLU(inplace=True),
         )
 
@@ -50,9 +57,10 @@ class MaSDecoder(nn.Module):
         self.bstm = BSTM(
             dim=2048,
             num_heads=config.num_heads,
-            window_size=min(config.window_size, 4),
+            window_size=config.window_size,
             input_resolution=(7, 7),
             depth=config.swin_bstm_depth,
+            drop_rate=config.dropout,
         )
 
         # ---- Decoder blocks (concat channels → output channels) ----------
@@ -71,7 +79,7 @@ class MaSDecoder(nn.Module):
         # FAM doubles channels: 128 → 256; project back to 128 for SDM
         self.fam_proj = nn.Sequential(
             nn.Conv2d(256, 128, kernel_size=1),
-            nn.BatchNorm2d(128),
+            _group_norm(128),
             nn.ReLU(inplace=True),
         )
 
@@ -82,17 +90,21 @@ class MaSDecoder(nn.Module):
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(56, 56),
+            drop_rate=config.dropout,
         )
 
         # ---- Segmentation head -------------------------------------------
-        self.seg_head = nn.Conv2d(128, 1, kernel_size=1)
+        # Concatenate decoder feature (128ch) with resized prev_mask (1ch).
+        self.seg_head = nn.Conv2d(129, 1, kernel_size=1)
 
         # ---- Deep-supervision heads --------------------------------------
         self.ds1_head = nn.Sequential(
             nn.Conv2d(1024, 1, kernel_size=1),
+            nn.ReLU(inplace=True),
         )
         self.ds2_head = nn.Sequential(
             nn.Conv2d(128, 1, kernel_size=1),
+            nn.ReLU(inplace=True),
         )
 
     def forward(
@@ -139,7 +151,14 @@ class MaSDecoder(nn.Module):
         x, ds2 = self.sdm(x)                  # (B, 128, 56, 56), (B, 128, 56, 56)
 
         # ---- Segmentation head -------------------------------------------
-        pred_mask = self.seg_head(x)   # (B, 1, 56, 56) logits
+        prev_mask_resized = F.interpolate(
+            prev_mask,
+            size=x.shape[2:],
+            mode="bilinear",
+            align_corners=False,
+        )
+        x_cat = torch.cat([x, prev_mask_resized], dim=1)  # (B, 129, 56, 56)
+        pred_mask = self.seg_head(x_cat)   # (B, 1, 56, 56) logits
 
         # ---- Deep supervision heads --------------------------------------
         ds1_out = self.ds1_head(ds1)   # (B, 1, 7, 7) logits

@@ -5,6 +5,13 @@ import numpy as np
 from skimage.filters import threshold_otsu
 
 
+def _group_norm(num_channels: int) -> nn.GroupNorm:
+    groups = min(32, num_channels)
+    while num_channels % groups != 0:
+        groups -= 1
+    return nn.GroupNorm(groups, num_channels)
+
+
 class EAM(nn.Module):
     """Edge Attention Module – predicts an edge probability map from encoder
     features.  Returns raw logits (sigmoid is applied in the loss)."""
@@ -12,17 +19,17 @@ class EAM(nn.Module):
     def __init__(self, in_channels: int, out_channels: int = 1):
         super().__init__()
         self.convs = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, 1),
-            nn.BatchNorm2d(in_channels),
+            nn.Conv2d(in_channels, in_channels, 3, padding=1),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, out_channels, 1),
         )
@@ -83,7 +90,7 @@ class FAM(nn.Module):
 
         self.mask_generator = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, 1, 1),
             nn.Sigmoid(),
@@ -91,13 +98,13 @@ class FAM(nn.Module):
 
         self.refine_path1 = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
         )
 
         self.refine_path2 = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            nn.BatchNorm2d(in_channels),
+            _group_norm(in_channels),
             nn.ReLU(inplace=True),
         )
 
@@ -116,19 +123,16 @@ class FAM(nn.Module):
         """
         _, _, H, W = feature_map.shape
 
-        # Step 1 – generate current soft mask from features
+        # Step 1 – generate current soft mask and threshold to binary
         current_soft = self.mask_generator(feature_map)            # (B, 1, H, W)
+        current_binary = (current_soft >= 0.5).float()            # (B, 1, H, W)
 
-        # Step 2 – resize previous mask to feature resolution
-        prev_mask_resized = F.interpolate(
-            prev_mask.float(),
-            size=(H, W),
-            mode="bilinear",
-            align_corners=False,
-        )  # (B, 1, H, W)
+        # Step 2 – resize previous mask with max-pooling style reduction
+        prev_mask_resized = F.adaptive_max_pool2d(prev_mask.float(), output_size=(H, W))
+        prev_mask_binary = (prev_mask_resized >= 0.5).float()     # (B, 1, H, W)
 
-        # Step 3 – differentiable union of current and previous masks
-        union_mask = torch.maximum(current_soft, prev_mask_resized)  # (B, 1, H, W)
+        # Step 3 – union mask
+        union_mask = torch.maximum(current_binary, prev_mask_binary)  # (B, 1, H, W)
 
         # Step 4 – enhance features with union mask
         enhanced_features = union_mask * feature_map               # (B, C, H, W)

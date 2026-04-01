@@ -6,6 +6,13 @@ from models.swin_blocks import RSTM
 from models.attention_modules import CAM, FAM, EAM
 
 
+def _group_norm(num_channels: int) -> nn.GroupNorm:
+    groups = min(32, num_channels)
+    while num_channels % groups != 0:
+        groups -= 1
+    return nn.GroupNorm(groups, num_channels)
+
+
 class MaSEncoder(nn.Module):
     """MaS-TransUNet encoder: ResNet-50 backbone augmented with FAM, CAM,
     RSTM, and EAM modules at each stage."""
@@ -36,7 +43,7 @@ class MaSEncoder(nn.Module):
         # FAM outputs 2×64 = 128 channels; project back to 64 for layer1
         self.fam_proj = nn.Sequential(
             nn.Conv2d(128, 64, kernel_size=1),
-            nn.BatchNorm2d(64),
+            _group_norm(64),
             nn.ReLU(inplace=True),
         )
 
@@ -47,6 +54,7 @@ class MaSEncoder(nn.Module):
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(56, 56),
+            drop_rate=config.dropout,
         )
 
         # ---- Stage 2: CAM + RSTM (512 ch, 28×28) -----------------------
@@ -56,6 +64,7 @@ class MaSEncoder(nn.Module):
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(28, 28),
+            drop_rate=config.dropout,
         )
 
         # ---- Stage 3: CAM + RSTM (1024 ch, 14×14) ----------------------
@@ -65,6 +74,7 @@ class MaSEncoder(nn.Module):
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(14, 14),
+            drop_rate=config.dropout,
         )
 
         # ---- EAM on Block-1 output (256 ch) → edge map -----------------

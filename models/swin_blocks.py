@@ -5,6 +5,43 @@ from einops import rearrange
 from timm.models.swin_transformer import SwinTransformerBlock
 
 
+def _group_norm(num_channels: int) -> nn.GroupNorm:
+    groups = min(32, num_channels)
+    while num_channels % groups != 0:
+        groups -= 1
+    return nn.GroupNorm(groups, num_channels)
+
+
+def _build_swin_block(
+    dim: int,
+    input_resolution: tuple[int, int],
+    num_heads: int,
+    window_size: int,
+    shift_size: int,
+    drop_rate: float,
+) -> SwinTransformerBlock:
+    # timm API differs across versions (drop vs proj_drop/attn_drop)
+    try:
+        return SwinTransformerBlock(
+            dim=dim,
+            input_resolution=input_resolution,
+            num_heads=num_heads,
+            window_size=window_size,
+            shift_size=shift_size,
+            drop=drop_rate,
+        )
+    except TypeError:
+        return SwinTransformerBlock(
+            dim=dim,
+            input_resolution=input_resolution,
+            num_heads=num_heads,
+            window_size=window_size,
+            shift_size=shift_size,
+            proj_drop=drop_rate,
+            attn_drop=drop_rate,
+        )
+
+
 def window_size_to_input_resolution(window_size: int) -> int:
     """Return the minimum spatial resolution that evenly tiles with
     *window_size* so that no padding is needed by the Swin block."""
@@ -79,18 +116,20 @@ class RSTM(nn.Module):
         num_heads: int = 8,
         window_size: int = 7,
         input_resolution: tuple[int, int] = (56, 56),
+        drop_rate: float = 0.0,
     ):
         super().__init__()
         self.input_resolution = input_resolution
         self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
 
         self.blocks = nn.ModuleList([
-            SwinTransformerBlock(
+            _build_swin_block(
                 dim=dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
                 shift_size=0 if (i % 2 == 0) else window_size // 2,
+                drop_rate=drop_rate,
             )
             for i in range(6)
         ])
@@ -132,24 +171,20 @@ class BSTM(nn.Module):
         window_size: int = 7,
         input_resolution: tuple[int, int] = (7, 7),
         depth: int = 12,
+        drop_rate: float = 0.0,
     ):
         super().__init__()
         self.input_resolution = input_resolution
         self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
 
-        # If the attention window covers the full bottleneck spatial map,
-        # shifted-window attention becomes degenerate (single-window case).
-        # Use non-shifted attention for all blocks in this regime.
-        min_res = min(input_resolution)
-        use_shift = window_size < min_res
-
         self.blocks = nn.ModuleList([
-            SwinTransformerBlock(
+            _build_swin_block(
                 dim=dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
-                shift_size=0 if ((i % 2 == 0) or (not use_shift)) else window_size // 2,
+                shift_size=0 if (i % 2 == 0) else window_size // 2,
+                drop_rate=drop_rate,
             )
             for i in range(depth)
         ])
@@ -190,30 +225,32 @@ class SDM(nn.Module):
         num_heads: int = 8,
         window_size: int = 7,
         input_resolution: tuple[int, int] = (14, 14),
+        drop_rate: float = 0.0,
     ):
         super().__init__()
         self.input_resolution = input_resolution
         self.patch_embed = PatchEmbedding(dim, dim, input_resolution)
 
         self.blocks = nn.ModuleList([
-            SwinTransformerBlock(
+            _build_swin_block(
                 dim=dim,
                 input_resolution=input_resolution,
                 num_heads=num_heads,
                 window_size=window_size,
                 shift_size=0 if (i % 2 == 0) else window_size // 2,
+                drop_rate=drop_rate,
             )
             for i in range(4)
         ])
 
         self.conv1 = nn.Sequential(
             nn.Conv2d(dim, dim, kernel_size=3, padding=1),
-            nn.BatchNorm2d(dim),
+            _group_norm(dim),
             nn.ReLU(inplace=True),
         )
         self.conv2 = nn.Sequential(
             nn.Conv2d(dim, out_dim, kernel_size=3, padding=1),
-            nn.BatchNorm2d(out_dim),
+            _group_norm(out_dim),
             nn.ReLU(inplace=True),
         )
 
