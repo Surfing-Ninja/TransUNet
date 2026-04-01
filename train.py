@@ -275,11 +275,12 @@ def train_single_dataset(
         )
 
         # Validate every N epochs
-        run_validation = (epoch + 1) % val_interval == 0
+        # Validate every epoch for first 20 epochs, then every 2 epochs.
+        run_validation = (epoch < 20) or ((epoch + 1) % 2 == 0)
         val_dice = None
         if run_validation:
-            validation_count = (epoch + 1) // val_interval
-            full_metrics = (validation_count % 3 == 0)
+            validation_count = (epoch + 1)
+            full_metrics = (validation_count % 6 == 0)
             val_dice = validate(
                 model,
                 test_loader,
@@ -287,7 +288,7 @@ def train_single_dataset(
                 device,
                 full_metrics=full_metrics,
                 fam_refine_iters=1,
-                val_dataset=test_loader.dataset,
+                val_dataset=None,   # stateless: don't corrupt test prev_masks
             )
 
         # Scheduler step
