@@ -19,17 +19,17 @@ class EAM(nn.Module):
     def __init__(self, in_channels: int, out_channels: int = 1):
         super().__init__()
         self.convs = nn.Sequential(
-            nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.Conv2d(in_channels, in_channels, 1),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, out_channels, 1),
         )
@@ -90,7 +90,7 @@ class FAM(nn.Module):
 
         self.mask_generator = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
             nn.Conv2d(in_channels, 1, 1),
             nn.Sigmoid(),
@@ -98,13 +98,13 @@ class FAM(nn.Module):
 
         self.refine_path1 = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
         )
 
         self.refine_path2 = nn.Sequential(
             nn.Conv2d(in_channels, in_channels, 3, padding=1),
-            _group_norm(in_channels),
+            nn.BatchNorm2d(in_channels),
             nn.ReLU(inplace=True),
         )
 
@@ -130,13 +130,19 @@ class FAM(nn.Module):
         # Hard threshold for current mask to match Algorithm 1 in the paper.
         current_binary = (current_soft >= 0.5).float()
 
-        # Step 2 – resize previous mask to feature resolution (bilinear)
-        prev_mask_resized = F.interpolate(
-            prev_mask.float(),
-            size=(H, W),
-            mode="bilinear",
-            align_corners=False,
-        )
+        # Step 2 – resize previous mask to feature resolution.
+        # Downsampling uses max-pooling to preserve foreground support.
+        if prev_mask.shape[2] == H and prev_mask.shape[3] == W:
+            prev_mask_resized = prev_mask.float()
+        elif prev_mask.shape[2] > H or prev_mask.shape[3] > W:
+            prev_mask_resized = F.adaptive_max_pool2d(prev_mask.float(), (H, W))
+        else:
+            prev_mask_resized = F.interpolate(
+                prev_mask.float(),
+                size=(H, W),
+                mode="bilinear",
+                align_corners=False,
+            )
         union_mask = torch.maximum(current_binary, prev_mask_resized)
 
         # Step 4 – enhance features with union mask

@@ -155,10 +155,7 @@ class MaSLoss(nn.Module):
         ds2_pred = self._prepare_ds(outputs["ds2"], target_size)
         lds2 = self._primary_loss(ds2_pred, gt_mask)
 
-        # DS losses weighted at 0.4 so the final head (Lp) dominates.
-        # Full weight (1.0) on DS caused Dice plateau because early-layer
-        # supervision dominated gradients before the final head converged.
-        total_loss = lp + lb + 0.4 * lds1 + 0.4 * lds2
+        total_loss = lp + lb + lds1 + lds2
 
         loss_dict = {
             "Lp":   lp.detach(),
