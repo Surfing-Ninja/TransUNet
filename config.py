@@ -139,11 +139,11 @@ class Config:
         if not torch.cuda.is_available():
             return 2
         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-        if total_memory_gb > 20:
-            return 8
-        if total_memory_gb >= 10:
+        if total_memory_gb >= 24:
             return 4
-        return 2
+        if total_memory_gb >= 10:
+            return 2
+        return 1
 
     def _auto_num_workers(self) -> int:
         if self.is_kaggle:
@@ -151,6 +151,20 @@ class Config:
         if sys.platform.startswith("win"):
             return 2
         return 4
+
+    @staticmethod
+    def _auto_accumulation_steps(default_steps: int, is_kaggle: bool) -> int:
+        if not torch.cuda.is_available():
+            return default_steps
+
+        total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+
+        # Kaggle T4/L4 class GPUs (~15-16GB) benefit from higher gradient
+        # accumulation with AdamW to keep per-step memory lower.
+        if is_kaggle and 10 <= total_memory_gb < 24:
+            return max(default_steps, 8)
+
+        return default_steps
 
     def _build_dataset_paths(self) -> None:
         dataset_names = [
@@ -316,6 +330,7 @@ class Config:
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.batch_size = self._auto_batch_size()
         self.num_workers = self._auto_num_workers()
+        self.accumulation_steps = self._auto_accumulation_steps(self.accumulation_steps, self.is_kaggle)
 
         if self.is_kaggle:
             explicit_kaggle_data_root = "/kaggle/input/datasets/mohitkhalote/transunet"

@@ -2,7 +2,10 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 import argparse
+import gc
 
 import numpy as np
 import torch
@@ -23,6 +26,20 @@ from utils.checkpointing import (
     load_epoch_masks,
 )
 from evaluate import evaluate_dataset
+
+
+def _is_cuda_oom(exc: BaseException) -> bool:
+    oom_type = getattr(torch.cuda, "OutOfMemoryError", None)
+    if oom_type is not None and isinstance(exc, oom_type):
+        return True
+    msg = str(exc).lower()
+    return "cuda out of memory" in msg or "out of memory" in msg
+
+
+def _clear_cuda_memory() -> None:
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
 
 
 # ======================================================================
@@ -58,15 +75,15 @@ def train_one_epoch(
         unit="batch",
     )
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
 
     use_fam_feedback = epoch >= fam_warmup_epochs
 
     for batch_idx, batch in enumerate(batch_bar, start=1):
-        images = batch["image"].to(device)
-        masks = batch["mask"].to(device)
-        edges = batch["edge"].to(device)
-        prev_masks = batch["prev_mask"].to(device)
+        images = batch["image"].to(device, non_blocking=True)
+        masks = batch["mask"].to(device, non_blocking=True)
+        edges = batch["edge"].to(device, non_blocking=True)
+        prev_masks = batch["prev_mask"].to(device, non_blocking=True)
         filenames = batch["filename"]
 
         # Forward in autocast, loss in float32
@@ -84,7 +101,7 @@ def train_one_epoch(
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
         running_loss += total_loss.item()
         num_batches += 1
@@ -102,12 +119,15 @@ def train_one_epoch(
                 mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
                 dataset.update_prev_mask(fname, mask_hw)
 
+        # Drop large references promptly to reduce peak retained memory.
+        del images, masks, edges, prev_masks, outputs, targets, total_loss, loss_for_backward
+
     if num_batches > 0 and num_batches % accumulation_steps != 0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
     return running_loss / max(num_batches, 1)
 
@@ -417,6 +437,15 @@ def main():
 
     if device == "cpu":
         print("[WARNING] Training is running on CPU. This is slow and may hurt convergence; use a CUDA GPU when possible.")
+    elif device.startswith("cuda"):
+        alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
+        mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+        print(
+            f"[CUDA] total_mem={mem_gb:.2f}GB, batch_size={config.batch_size}, "
+            f"accumulation_steps={config.accumulation_steps}"
+        )
+        if alloc_conf:
+            print(f"[CUDA] PYTORCH_CUDA_ALLOC_CONF={alloc_conf}")
 
     # Determine which datasets to train on
     all_datasets = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
@@ -428,18 +457,35 @@ def main():
     # Train each dataset sequentially
     results_table = {}
     for ds_name in datasets_to_train:
+        retry_count = 0
         try:
-            train_single_dataset(
-                ds_name,
-                config,
-                device,
-                results_table,
-                overfit_samples=config.overfit_samples,
-            )
+            while True:
+                try:
+                    train_single_dataset(
+                        ds_name,
+                        config,
+                        device,
+                        results_table,
+                        overfit_samples=config.overfit_samples,
+                    )
+                    break
+                except RuntimeError as e:
+                    if not (device.startswith("cuda") and _is_cuda_oom(e) and config.batch_size > 1):
+                        raise
+
+                    retry_count += 1
+                    old_bs = config.batch_size
+                    config.batch_size = max(1, old_bs // 2)
+                    print(
+                        f"\n  [OOM] {ds_name}: reducing batch_size {old_bs} -> {config.batch_size} and retrying "
+                        f"(attempt {retry_count})"
+                    )
+                    _clear_cuda_memory()
         except Exception as e:
             print(f"\n  [ERROR training {ds_name}: {e}]")
             print(f"  [Continuing to next dataset…]\n")
             results_table[ds_name] = None
+            _clear_cuda_memory()
             continue
 
     # ---- Print summary table --------------------------------------------
@@ -450,7 +496,7 @@ def main():
     sep = "-" * len(header)
     print(f"  {header}")
     print(f"  {sep}")
-    for ds_name in all_datasets:
+    for ds_name in datasets_to_train:
         if ds_name in results_table:
             dice = results_table[ds_name]
             if dice is not None:
