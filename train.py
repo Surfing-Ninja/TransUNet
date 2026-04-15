@@ -97,7 +97,7 @@ def train_one_epoch(
             tqdm.write(f"  [e{epoch+1} b{batch_idx}] {ld}  scale={scale}")
 
         if use_fam_feedback:
-            pred_np = torch.sigmoid(outputs["pred_mask"]).detach().cpu().numpy()
+            pred_np = (torch.sigmoid(outputs["pred_mask"]) >= 0.5).detach().cpu().numpy()
             for i, fname in enumerate(filenames):
                 mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
                 dataset.update_prev_mask(fname, mask_hw)
@@ -120,6 +120,7 @@ def validate(
     full_metrics: bool = True,
     fam_refine_iters: int = 1,
     val_dataset: MedicalSegDataset | None = None,
+    threshold: float = 0.5,
 ) -> float:
     """Run validation / test evaluation.
 
@@ -149,37 +150,24 @@ def validate(
             for _ in range(num_passes):
                 with autocast("cuda", enabled=device.startswith("cuda")):
                     outputs = model(images, prev_masks)
-                prev_masks = torch.sigmoid(outputs["pred_mask"]).detach()
+                prev_masks = (torch.sigmoid(outputs["pred_mask"]) >= threshold).float().detach()
 
             preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy().astype(np.float32)  # (B, 1, H, W)
 
             if val_dataset is not None:
-                pred_uint8 = (preds[:, 0] >= 0.5).astype(np.uint8) * 255
+                pred_uint8 = (preds[:, 0] >= threshold).astype(np.uint8) * 255
                 for i, fname in enumerate(filenames):
                     val_dataset.update_prev_mask(fname, pred_uint8[i])
 
             for i in range(preds.shape[0]):
-                pred_bin = (preds[i, 0] >= 0.5).astype(np.uint8)
-                gt_bin = (masks_np[i, 0] >= 0.5).astype(np.uint8)
-
-                # Soft Dice is smoother than thresholded Dice and better for
-                # tracking incremental validation improvements.
-                eps = 1e-6
-                pred_soft = preds[i, 0].astype(np.float64)
-                gt_soft = masks_np[i, 0].astype(np.float64)
-                inter_soft = np.sum(pred_soft * gt_soft)
-                denom_soft = np.sum(pred_soft) + np.sum(gt_soft)
-                soft_dice = float((2.0 * inter_soft + eps) / (denom_soft + eps))
+                pred_bin = (preds[i, 0] >= threshold).astype(np.uint8)
+                gt_bin = (masks_np[i, 0] >= threshold).astype(np.uint8)
 
                 if full_metrics:
                     metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
-                    metrics["dice"] = soft_dice
-                    metrics["dice_bin"] = float(
-                        (2.0 * np.sum(pred_bin * gt_bin))
-                        / (np.sum(pred_bin) + np.sum(gt_bin) + eps)
-                    )
                 else:
-                    metrics = {"dice": soft_dice}
+                    metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
+                    metrics = {"dice": metrics["dice"]}
 
                 aggregator.update(metrics)
 
@@ -194,13 +182,19 @@ def validate(
 
 
 def train_single_dataset(
-    dataset_name: str, config, device: str, results_table: dict
+    dataset_name: str,
+    config,
+    device: str,
+    results_table: dict,
+    overfit_samples: int = 0,
 ) -> float:
     """Train and evaluate a single dataset. Returns best Dice score."""
     print(f"\n{'='*70}")
     print(f"  DATASET: {dataset_name:15s}  |  batch_size={config.batch_size}  num_workers={config.num_workers}")
     print(f"  accumulation_steps={config.accumulation_steps}  effective_batch_size={config.batch_size * config.accumulation_steps}")
     print(f"  fam_warmup_epochs={config.fam_warmup_epochs}")
+    if overfit_samples > 0:
+        print(f"  OVERFIT DEBUG MODE: using {overfit_samples} training samples only")
     print(f"{'='*70}\n")
 
     # ---- Model -----------------------------------------------------------
@@ -214,23 +208,43 @@ def train_single_dataset(
     )
 
     # ---- Optimizer / scheduler -------------------------------------------
-    optimizer = optim.SGD(
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
-        momentum=config.momentum,
         weight_decay=config.weight_decay,
-        nesterov=True,
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=config.num_epochs,
-        eta_min=config.eta_min,
-    )
+    warmup_epochs = int(min(max(getattr(config, "warmup_epochs", 0), 0), max(config.num_epochs - 1, 0)))
+    if warmup_epochs > 0:
+        warmup_scheduler = optim.lr_scheduler.LinearLR(
+            optimizer,
+            start_factor=float(getattr(config, "warmup_start_factor", 0.1)),
+            total_iters=warmup_epochs,
+        )
+        cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(config.num_epochs - warmup_epochs, 1),
+            eta_min=config.eta_min,
+        )
+        scheduler = optim.lr_scheduler.SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, cosine_scheduler],
+            milestones=[warmup_epochs],
+        )
+    else:
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(config.num_epochs, 1),
+            eta_min=config.eta_min,
+        )
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
 
     # ---- Data ------------------------------------------------------------
-    train_loader, test_loader = get_dataloaders(dataset_name, config)
+    train_loader, test_loader = get_dataloaders(
+        dataset_name,
+        config,
+        overfit_samples=overfit_samples,
+    )
     train_dataset: MedicalSegDataset = train_loader.dataset
     print(
         f"Data ready: train={len(train_dataset)} | test={len(test_loader.dataset)} | "
@@ -256,8 +270,6 @@ def train_single_dataset(
 
     # ---- Metric aggregator -----------------------------------------------
     aggregator = MetricAggregator()
-    val_interval = 3
-
     # ---- Training loop ---------------------------------------------------
     epoch_bar = tqdm(
         range(start_epoch, config.num_epochs),
@@ -294,6 +306,7 @@ def train_single_dataset(
                 full_metrics=full_metrics,
                 fam_refine_iters=1,
                 val_dataset=None,   # stateless: don't corrupt test prev_masks
+                threshold=float(getattr(config, "metric_threshold", 0.5)),
             )
 
         # Scheduler step
@@ -383,6 +396,12 @@ def main():
         default=None,
         help="Absolute path to local datasets root (overrides base_data_dir).",
     )
+    parser.add_argument(
+        "--overfit-samples",
+        type=int,
+        default=0,
+        help="If >0, train/evaluate on only N training images to debug overfitting.",
+    )
     args = parser.parse_args()
     dataset_spec = args.dataset_name
 
@@ -391,6 +410,9 @@ def main():
         raise ValueError("--data-dir must be an absolute path, e.g. /Users/name/datasets or C:/datasets")
     config.configure_runtime(force_local=args.local, data_dir=args.data_dir)
     config.fast_mode = args.fast
+    config.overfit_samples = max(0, int(args.overfit_samples))
+    if config.overfit_samples > 0:
+        config.foreground_sampling = False
     device = config.device
 
     if device == "cpu":
@@ -407,7 +429,13 @@ def main():
     results_table = {}
     for ds_name in datasets_to_train:
         try:
-            train_single_dataset(ds_name, config, device, results_table)
+            train_single_dataset(
+                ds_name,
+                config,
+                device,
+                results_table,
+                overfit_samples=config.overfit_samples,
+            )
         except Exception as e:
             print(f"\n  [ERROR training {ds_name}: {e}]")
             print(f"  [Continuing to next dataset…]\n")

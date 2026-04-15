@@ -11,9 +11,11 @@ class Config:
     image_size: int = 224
     batch_size: int = 2
     num_epochs: int = 100
-    learning_rate: float = 0.01
+    learning_rate: float = 3e-4
     accumulation_steps: int = 4
     fam_warmup_epochs: int = 1
+    warmup_epochs: int = 5
+    warmup_start_factor: float = 0.1
     eta_min: float = 1e-5
     momentum: float = 0.99
     weight_decay: float = 1e-4
@@ -22,6 +24,13 @@ class Config:
     local_data_dir: str | None = None
     apply_low_content_filter: bool = True
     min_foreground_ratio: float = 0.02
+    foreground_sampling: bool = True
+    foreground_sampling_threshold: float = 0.01
+    foreground_sampling_boost: float = 4.0
+    metric_threshold: float = 0.5
+
+    # Overfit-debug mode
+    overfit_samples: int = 0
 
     # Swin Transformer
     window_size: int = 7          # Swin Transformer window size
@@ -32,9 +41,13 @@ class Config:
 
     # Loss
     lambda_weight: float = 1.0    # BCE weight in primary loss
+    boundary_loss_weight: float = 0.15
+    ds_loss_weight: float = 0.2
 
     # Test-time refinement
     num_refinement_iters: int = 10  # test-time FAM iterations
+    eval_use_tta: bool = True
+    eval_keep_lcc: bool = True
 
     # Checkpointing / logging
     checkpoint_interval: int = 5  # save every 5 epochs

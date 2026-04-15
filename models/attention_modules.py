@@ -126,7 +126,6 @@ class FAM(nn.Module):
         # Step 1 – generate current soft mask
         current_soft = self.mask_generator(feature_map)            # (B, 1, H, W)
         
-        # Use same bilinear resize in train and inference (no train/test gap).
         # Hard threshold for current mask to match Algorithm 1 in the paper.
         current_binary = (current_soft >= 0.5).float()
 
@@ -140,9 +139,9 @@ class FAM(nn.Module):
             prev_mask_resized = F.interpolate(
                 prev_mask.float(),
                 size=(H, W),
-                mode="bilinear",
-                align_corners=False,
+                mode="nearest",
             )
+        prev_mask_resized = (prev_mask_resized >= 0.5).float()
         union_mask = torch.maximum(current_binary, prev_mask_resized)
 
         # Step 4 – enhance features with union mask

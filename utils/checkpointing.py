@@ -45,11 +45,17 @@ def load_latest_checkpoint(model, optimizer, scheduler, dataset_name, checkpoint
     # Backward-compatible: older checkpoints may not contain these states.
     optimizer_state = ckpt.get("optimizer_state_dict")
     if optimizer_state is not None:
-        optimizer.load_state_dict(optimizer_state)
+        try:
+            optimizer.load_state_dict(optimizer_state)
+        except Exception as exc:
+            print(f"[resume] optimizer state skipped: {exc}")
 
     scheduler_state = ckpt.get("scheduler_state_dict")
     if scheduler_state is not None:
-        scheduler.load_state_dict(scheduler_state)
+        try:
+            scheduler.load_state_dict(scheduler_state)
+        except Exception as exc:
+            print(f"[resume] scheduler state skipped: {exc}")
 
     return ckpt["epoch"] + 1, ckpt.get("best_dice", 0.0)
 

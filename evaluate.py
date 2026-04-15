@@ -25,12 +25,68 @@ from utils.metrics import SegmentationMetrics, MetricAggregator
 # ======================================================================
 
 
+def _predict_with_tta(
+    model: nn.Module,
+    image: torch.Tensor,
+    prev_mask: torch.Tensor,
+    device: str,
+    use_tta: bool,
+) -> torch.Tensor:
+    """Return sigmoid probabilities (B, 1, H, W) with optional flip-TTA."""
+    if not use_tta:
+        with torch.autocast("cuda", enabled=device.startswith("cuda")):
+            outputs = model(image, prev_mask)
+        return torch.sigmoid(outputs["pred_mask"])
+
+    probs = []
+    flip_dims = [None, (3,), (2,), (2, 3)]
+    for dims in flip_dims:
+        if dims is None:
+            aug_img = image
+            aug_prev = prev_mask
+        else:
+            aug_img = torch.flip(image, dims=dims)
+            aug_prev = torch.flip(prev_mask, dims=dims)
+
+        with torch.autocast("cuda", enabled=device.startswith("cuda")):
+            outputs = model(aug_img, aug_prev)
+        pred = torch.sigmoid(outputs["pred_mask"])
+
+        if dims is not None:
+            pred = torch.flip(pred, dims=dims)
+        probs.append(pred)
+
+    return torch.stack(probs, dim=0).mean(dim=0)
+
+
+def _largest_connected_component(mask: np.ndarray) -> np.ndarray:
+    """Keep only the largest foreground component in a binary mask."""
+    if mask.max() == 0:
+        return mask
+
+    num_labels, labels = cv2.connectedComponents(mask.astype(np.uint8))
+    if num_labels <= 1:
+        return mask
+
+    best_label = 0
+    best_area = -1
+    for label in range(1, num_labels):
+        area = int((labels == label).sum())
+        if area > best_area:
+            best_area = area
+            best_label = label
+
+    return (labels == best_label).astype(np.uint8)
+
+
 def iterative_refinement(
     model: nn.Module,
     image_tensor: torch.Tensor,
     initial_prev_mask: torch.Tensor,
     device: str,
     max_iters: int = 10,
+    threshold: float = 0.5,
+    use_tta: bool = True,
 ) -> tuple[np.ndarray, int]:
     """Run iterative FAM refinement at test time.
 
@@ -50,10 +106,8 @@ def iterative_refinement(
     prev_binary: np.ndarray | None = None
 
     for it in range(1, max_iters + 1):
-        with torch.autocast("cuda", enabled=device.startswith("cuda")):
-            outputs = model(image, prev_mask)
-        pred_prob = torch.sigmoid(outputs["pred_mask"])         # (1, 1, H, W)
-        current_binary = (pred_prob.cpu().numpy()[0, 0] >= 0.5).astype(np.uint8)
+        pred_prob = _predict_with_tta(model, image, prev_mask, device, use_tta=use_tta)
+        current_binary = (pred_prob.cpu().numpy()[0, 0] >= threshold).astype(np.uint8)
 
         # Convergence check
         if prev_binary is not None:
@@ -65,7 +119,7 @@ def iterative_refinement(
                 return current_binary, it
 
         # Feed current prediction back as prev_mask for next iteration
-        prev_mask = pred_prob.detach()
+        prev_mask = (pred_prob >= threshold).float().detach()
         prev_binary = current_binary
 
     return current_binary, max_iters
@@ -147,6 +201,7 @@ def evaluate_dataset(dataset_name: str, checkpoint_path: str) -> None:
           f"with up to {config.num_refinement_iters} FAM iterations …\n")
 
     with torch.no_grad():
+        threshold = float(getattr(config, "metric_threshold", 0.5))
         for idx, batch in enumerate(tqdm(test_loader, desc="Testing")):
             images = batch["image"]                              # (B, 3, H, W)
             masks_np = batch["mask"].numpy()                     # (B, 1, H, W)
@@ -160,9 +215,14 @@ def evaluate_dataset(dataset_name: str, checkpoint_path: str) -> None:
                 pred_bin, iters_used = iterative_refinement(
                     model, img_single, pm_single, device,
                     max_iters=config.num_refinement_iters,
+                    threshold=threshold,
+                    use_tta=bool(getattr(config, "eval_use_tta", True)),
                 )
 
-                gt_bin = (masks_np[i, 0] >= 0.5).astype(np.uint8)
+                if bool(getattr(config, "eval_keep_lcc", True)):
+                    pred_bin = _largest_connected_component(pred_bin)
+
+                gt_bin = (masks_np[i, 0] >= threshold).astype(np.uint8)
                 metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
                 metrics["iters_used"] = iters_used
                 aggregator.update(metrics)

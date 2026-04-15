@@ -17,6 +17,8 @@ class MaSLoss(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.lambda_weight = config.lambda_weight  # BCE weight in primary loss
+        self.boundary_loss_weight = float(getattr(config, "boundary_loss_weight", 0.15))
+        self.ds_loss_weight = float(getattr(config, "ds_loss_weight", 0.2))
 
     # ------------------------------------------------------------------
     # Private losses
@@ -155,7 +157,12 @@ class MaSLoss(nn.Module):
         ds2_pred = self._prepare_ds(outputs["ds2"], target_size)
         lds2 = self._primary_loss(ds2_pred, gt_mask)
 
-        total_loss = lp + lb + lds1 + lds2
+        total_loss = (
+            lp
+            + self.boundary_loss_weight * lb
+            + self.ds_loss_weight * lds1
+            + self.ds_loss_weight * lds2
+        )
 
         loss_dict = {
             "Lp":   lp.detach(),

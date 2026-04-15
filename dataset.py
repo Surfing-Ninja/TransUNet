@@ -6,7 +6,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
 from PIL import Image
 from skimage.filters import threshold_otsu
 import albumentations as A
@@ -223,6 +223,7 @@ class MedicalSegDataset(Dataset):
         # Stores the previous epoch's predicted mask (numpy uint8 H×W)
         # keyed by filename.  Populated via update_prev_mask().
         self.prev_masks: dict[str, np.ndarray] = {}
+        self.fg_ratios = [self._compute_foreground_ratio(name) for name in self.filenames]
 
     def __len__(self) -> int:
         return len(self.filenames)
@@ -335,7 +336,14 @@ class MedicalSegDataset(Dataset):
 
     def update_prev_mask(self, filename: str, prediction: np.ndarray) -> None:
         """Store the model's latest prediction for use in the next epoch."""
-        self.prev_masks[filename] = prediction
+        self.prev_masks[filename] = _to_binary_uint8(prediction)
+
+    def get_sampling_weights(self, threshold: float = 0.01, boost: float = 4.0) -> list[float]:
+        """Foreground-aware sample weights for WeightedRandomSampler."""
+        weights: list[float] = []
+        for ratio in self.fg_ratios:
+            weights.append(float(boost if ratio >= threshold else 1.0))
+        return weights
 
     # ------------------------------------------------------------------
     # Helpers
@@ -352,6 +360,16 @@ class MedicalSegDataset(Dataset):
                 return str(candidate)
         return None
 
+    def _compute_foreground_ratio(self, filename: str) -> float:
+        stem = Path(filename).stem
+        mask_path = self._find_file(self.masks_dir, stem)
+        if mask_path is None:
+            return 0.0
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        if mask is None or mask.size == 0:
+            return 0.0
+        return float(np.count_nonzero(mask > 127)) / float(mask.size)
+
 
 # ======================================================================
 # Augmentation pipelines
@@ -367,15 +385,17 @@ def get_train_transforms(fast_mode: bool = False) -> A.Compose:
         A.RandomCrop(height=224, width=224),
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.3),
-        A.Rotate(limit=30, p=0.5),
-        A.ElasticTransform(p=0.3),
-        A.GridDistortion(p=0.3),
-        A.OpticalDistortion(p=0.2),
+        A.Rotate(limit=30, interpolation=cv2.INTER_LINEAR, mask_interpolation=cv2.INTER_NEAREST, p=0.5),
         A.RandomBrightnessContrast(p=0.4),
         A.RandomGamma(p=0.3),
         A.CLAHE(p=0.3),
         A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
     ]
+
+    if not fast_mode:
+        transforms.insert(5, A.ElasticTransform(p=0.3))
+        transforms.insert(6, A.GridDistortion(p=0.3))
+        transforms.insert(7, A.OpticalDistortion(p=0.2))
 
     return A.Compose(
         transforms,
@@ -386,7 +406,7 @@ def get_train_transforms(fast_mode: bool = False) -> A.Compose:
 def get_val_transforms() -> A.Compose:
     return A.Compose(
         [
-            A.Resize(224, 224),
+            A.Resize(224, 224, interpolation=cv2.INTER_LINEAR, mask_interpolation=cv2.INTER_NEAREST),
             A.Normalize(mean=IMAGENET_MEAN, std=IMAGENET_STD),
         ],
         additional_targets={"edge": "mask", "prev_mask": "mask"},
@@ -401,23 +421,35 @@ def get_val_transforms() -> A.Compose:
 def get_dataloaders(
     dataset_name: str,
     config: Config = CFG,
+    overfit_samples: int = 0,
 ) -> tuple[DataLoader, DataLoader]:
     """Return (train_loader, test_loader) for the given dataset."""
 
     _prepare_kaggle_working_split(dataset_name, config)
 
+    overfit_mode = overfit_samples > 0
+    train_transform = get_val_transforms() if overfit_mode else get_train_transforms(config.fast_mode)
+    eval_split = "train" if overfit_mode else "test"
+
     train_ds = MedicalSegDataset(
         dataset_name=dataset_name,
         split="train",
         config=config,
-        transform=get_train_transforms(config.fast_mode),
+        transform=train_transform,
     )
     test_ds = MedicalSegDataset(
         dataset_name=dataset_name,
-        split="test",
+        split=eval_split,
         config=config,
         transform=get_val_transforms(),
     )
+
+    if overfit_mode:
+        subset_n = min(overfit_samples, len(train_ds))
+        train_ds.filenames = train_ds.filenames[:subset_n]
+        train_ds.fg_ratios = train_ds.fg_ratios[:subset_n]
+        test_ds.filenames = list(train_ds.filenames)
+        test_ds.fg_ratios = list(train_ds.fg_ratios)
 
     if len(train_ds) == 0:
         raise ValueError(
@@ -433,13 +465,26 @@ def get_dataloaders(
     # Use configured num_workers (auto-set based on Colab detection)
     pin_memory = config.device.startswith("cuda")
 
+    train_sampler = None
+    if getattr(config, "foreground_sampling", False) and len(train_ds) > 0:
+        weights = train_ds.get_sampling_weights(
+            threshold=float(getattr(config, "foreground_sampling_threshold", 0.01)),
+            boost=float(getattr(config, "foreground_sampling_boost", 4.0)),
+        )
+        train_sampler = WeightedRandomSampler(
+            weights=torch.as_tensor(weights, dtype=torch.double),
+            num_samples=len(weights),
+            replacement=True,
+        )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=config.batch_size,
-        shuffle=True,
+        shuffle=train_sampler is None,
+        sampler=train_sampler,
         num_workers=config.num_workers,
         pin_memory=pin_memory,
-            drop_last=True,
+        drop_last=False,
     )
     test_loader = DataLoader(
         test_ds,
