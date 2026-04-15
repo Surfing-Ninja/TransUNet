@@ -34,6 +34,25 @@ def _clear_cuda_memory() -> None:
         torch.cuda.empty_cache()
 
 
+def _nonfinite_tensor_report(name: str, tensor: torch.Tensor) -> str | None:
+    if torch.isfinite(tensor).all():
+        return None
+
+    t = tensor.detach().float()
+    nan_count = int(torch.isnan(t).sum().item())
+    inf_count = int(torch.isinf(t).sum().item())
+    finite_vals = t[torch.isfinite(t)]
+    if finite_vals.numel() > 0:
+        abs_max = float(finite_vals.abs().max().item())
+    else:
+        abs_max = float("nan")
+
+    return (
+        f"{name}(nan={nan_count}, inf={inf_count}, "
+        f"finite_abs_max={abs_max:.3e})"
+    )
+
+
 # ======================================================================
 # Training helpers
 # ======================================================================
@@ -68,6 +87,9 @@ def train_one_epoch(
     )
 
     optimizer.zero_grad(set_to_none=True)
+    amp_enabled = scaler.is_enabled()
+    skipped_nonfinite = 0
+    first_nonfinite_reported = False
 
     use_fam_feedback = epoch >= fam_warmup_epochs
 
@@ -79,10 +101,46 @@ def train_one_epoch(
         filenames = batch["filename"]
 
         # Forward in autocast, loss in float32
-        with autocast("cuda", enabled=device.startswith("cuda")):
+        with autocast("cuda", enabled=amp_enabled):
             outputs = model(images, prev_masks)
+
+        output_reports = []
+        for out_name, out_tensor in outputs.items():
+            rep = _nonfinite_tensor_report(out_name, out_tensor)
+            if rep is not None:
+                output_reports.append(rep)
+
+        if output_reports:
+            skipped_nonfinite += 1
+            optimizer.zero_grad(set_to_none=True)
+            if scaler.is_enabled():
+                scaler.update()
+
+            if (not first_nonfinite_reported) or (batch_idx % 20 == 0):
+                tqdm.write(
+                    f"  [e{epoch+1} b{batch_idx}] non-finite model outputs: "
+                    + "; ".join(output_reports)
+                )
+                first_nonfinite_reported = True
+
+            del images, masks, edges, prev_masks, outputs, output_reports
+            continue
+
         targets = {"mask": masks, "edge": edges}
         total_loss, loss_dict = criterion(outputs, targets)
+
+        if not torch.isfinite(total_loss.detach()):
+            skipped_nonfinite += 1
+            optimizer.zero_grad(set_to_none=True)
+            if scaler.is_enabled():
+                scaler.update()
+            if batch_idx % 20 == 0 or skipped_nonfinite <= 3:
+                tqdm.write(
+                    f"  [e{epoch+1} b{batch_idx}] non-finite loss detected; "
+                    f"skipping batch (count={skipped_nonfinite})"
+                )
+            del images, masks, edges, prev_masks, outputs, targets, total_loss
+            continue
 
         # Backward (gradient accumulation with AMP)
         loss_for_backward = total_loss / accumulation_steps
@@ -90,7 +148,19 @@ def train_one_epoch(
 
         if batch_idx % accumulation_steps == 0:
             scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            if not torch.isfinite(grad_norm):
+                skipped_nonfinite += 1
+                optimizer.zero_grad(set_to_none=True)
+                if scaler.is_enabled():
+                    scaler.update()
+                if batch_idx % 20 == 0 or skipped_nonfinite <= 3:
+                    tqdm.write(
+                        f"  [e{epoch+1} b{batch_idx}] non-finite grad norm detected; "
+                        f"skipping optimizer step (count={skipped_nonfinite})"
+                    )
+                del grad_norm
+                continue
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
@@ -116,10 +186,24 @@ def train_one_epoch(
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad(set_to_none=True)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        if torch.isfinite(grad_norm):
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+        else:
+            skipped_nonfinite += 1
+            optimizer.zero_grad(set_to_none=True)
+            if scaler.is_enabled():
+                scaler.update()
+            tqdm.write(
+                f"  [e{epoch+1}] non-finite grad norm at epoch tail; "
+                f"skipping final optimizer step (count={skipped_nonfinite})"
+            )
+        del grad_norm
+
+    if skipped_nonfinite > 0:
+        tqdm.write(f"  [e{epoch+1}] skipped {skipped_nonfinite} non-finite updates")
 
     return running_loss / max(num_batches, 1)
 
@@ -133,6 +217,7 @@ def validate(
     fam_refine_iters: int = 1,
     val_dataset: MedicalSegDataset | None = None,
     threshold: float = 0.5,
+    amp_enabled: bool = True,
 ) -> float:
     """Run validation / test evaluation.
 
@@ -160,11 +245,12 @@ def validate(
             # Validation feedback refinement to avoid stale Otsu-only prev masks.
             num_passes = max(1, fam_refine_iters + 1)
             for _ in range(num_passes):
-                with autocast("cuda", enabled=device.startswith("cuda")):
+                with autocast("cuda", enabled=amp_enabled):
                     outputs = model(images, prev_masks)
                 prev_masks = (torch.sigmoid(outputs["pred_mask"]) >= threshold).float().detach()
 
             preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy().astype(np.float32)  # (B, 1, H, W)
+            preds = np.nan_to_num(preds, nan=0.0, posinf=1.0, neginf=0.0)
 
             if val_dataset is not None:
                 pred_uint8 = (preds[:, 0] >= threshold).astype(np.uint8) * 255
@@ -215,8 +301,9 @@ def train_single_dataset(
     # ---- AMP scaler ------------------------------------------------------
     # init_scale=256 avoids the default 65536 which causes fp16 gradient
     # overflow → GradScaler silently skips optimizer steps with SGD.
+    amp_enabled = bool(getattr(config, "use_amp", True)) and device.startswith("cuda")
     scaler = GradScaler(
-        "cuda", enabled=device.startswith("cuda"), init_scale=256,
+        "cuda", enabled=amp_enabled, init_scale=256,
     )
 
     # ---- Optimizer / scheduler -------------------------------------------
@@ -320,6 +407,7 @@ def train_single_dataset(
                 fam_refine_iters=1,
                 val_dataset=None,   # stateless: don't corrupt test prev_masks
                 threshold=float(getattr(config, "metric_threshold", 0.5)),
+                amp_enabled=amp_enabled,
             )
 
         # Scheduler step
@@ -439,7 +527,7 @@ def main():
         mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         print(
             f"[CUDA] total_mem={mem_gb:.2f}GB, batch_size={config.batch_size}, "
-            f"accumulation_steps={config.accumulation_steps}"
+            f"accumulation_steps={config.accumulation_steps}, use_amp={bool(getattr(config, 'use_amp', True))}"
         )
         if alloc_conf:
             print(f"[CUDA] PYTORCH_CUDA_ALLOC_CONF={alloc_conf}")

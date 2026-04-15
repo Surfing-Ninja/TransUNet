@@ -171,6 +171,11 @@ class MaSDecoder(nn.Module):
         ds1_out = self.ds1_head(ds1)   # (B, 1, 7, 7) logits
         ds2_out = self.ds2_head(ds2)   # (B, 1, 56, 56) logits
 
+        # Numeric guard: keep logits finite and in a sane range before loss.
+        pred_mask = torch.nan_to_num(pred_mask, nan=0.0, posinf=30.0, neginf=-30.0).clamp(-30.0, 30.0)
+        ds1_out = torch.nan_to_num(ds1_out, nan=0.0, posinf=30.0, neginf=-30.0).clamp(-30.0, 30.0)
+        ds2_out = torch.nan_to_num(ds2_out, nan=0.0, posinf=30.0, neginf=-30.0).clamp(-30.0, 30.0)
+
         # Upsample to input resolution
         target_size = encoder_outputs["edge_map"].shape[2:]
         pred_mask = F.interpolate(

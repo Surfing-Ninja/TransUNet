@@ -73,7 +73,8 @@ class MaSLoss(nn.Module):
         target: torch.Tensor,
     ) -> torch.Tensor:
         """Primary segmentation loss (Eq. 6):  L_IoU + λ · L_BCE."""
-        logits = pred.float()
+        logits = torch.nan_to_num(pred.float(), nan=0.0, posinf=30.0, neginf=-30.0)
+        logits = logits.clamp(min=-30.0, max=30.0)
         probs = torch.sigmoid(logits)
         iou = self._weighted_iou_loss(probs, target.float())
         bce = self._weighted_bce_loss(logits, target.float())
@@ -108,8 +109,9 @@ class MaSLoss(nn.Module):
         target_size: tuple[int, int],
     ) -> torch.Tensor:
         """Resize single-channel deep-supervision logits to target size."""
+        ds = torch.nan_to_num(ds.float(), nan=0.0, posinf=30.0, neginf=-30.0)
         return F.interpolate(
-            ds.float(),
+            ds,
             size=target_size,
             mode="bilinear",
             align_corners=False,
@@ -147,7 +149,8 @@ class MaSLoss(nn.Module):
         lp = self._primary_loss(outputs["pred_mask"], gt_mask)
 
         # Boundary loss on edge map (Eq. 7)
-        pred_edge = torch.sigmoid(outputs["edge_map"])
+        pred_edge_logits = torch.nan_to_num(outputs["edge_map"].float(), nan=0.0, posinf=30.0, neginf=-30.0)
+        pred_edge = torch.sigmoid(pred_edge_logits)
         lb = self._boundary_loss(pred_edge, gt_edge)
 
         # Deep-supervision losses
