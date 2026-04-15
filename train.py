@@ -34,6 +34,19 @@ def _clear_cuda_memory() -> None:
         torch.cuda.empty_cache()
 
 
+def _reset_optimizer_state(optimizer: optim.Optimizer) -> None:
+    """Reset adaptive optimizer moments (e.g., AdamW exp_avg/exp_avg_sq).
+
+    This gives a stronger escape step when validation is stuck in a local basin.
+    """
+    for state in optimizer.state.values():
+        if not isinstance(state, dict):
+            continue
+        for key, value in state.items():
+            if torch.is_tensor(value):
+                value.zero_()
+
+
 def _nonfinite_tensor_report(name: str, tensor: torch.Tensor) -> str | None:
     if torch.isfinite(tensor).all():
         return None
@@ -344,6 +357,8 @@ def train_single_dataset(
     plateau_lr_cap = float(getattr(config, "plateau_lr_boost_cap", 1e-3))
     plateau_max_escapes = max(int(getattr(config, "plateau_max_escapes", 3)), 0)
     plateau_cooldown = max(int(getattr(config, "plateau_cooldown_epochs", 4)), 0)
+    plateau_start_epoch = max(int(getattr(config, "plateau_start_epoch", 3)), 0)
+    plateau_reset_optimizer = bool(getattr(config, "plateau_reset_optimizer_state", True))
     no_improve_epochs = 0
     plateau_escape_count = 0
     plateau_cooldown_remaining = 0
@@ -438,6 +453,7 @@ def train_single_dataset(
         # Plateau fallback: if Dice stagnates, boost LR and restart cosine.
         trigger_escape = (
             run_validation
+            and (epoch + 1) >= plateau_start_epoch
             and no_improve_epochs >= plateau_patience
             and plateau_escape_count < plateau_max_escapes
         )
@@ -449,6 +465,9 @@ def train_single_dataset(
             )
             for param_group in optimizer.param_groups:
                 param_group["lr"] = boosted_lr
+
+            if plateau_reset_optimizer:
+                _reset_optimizer_state(optimizer)
 
             remaining_epochs = max(config.num_epochs - (epoch + 1), 1)
             scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -465,7 +484,8 @@ def train_single_dataset(
             tqdm.write(
                 f"  [plateau-escape e{epoch+1}] Dice stagnated for {plateau_patience} epochs; "
                 f"LR boosted {old_lr:.2e} -> {boosted_lr:.2e} and cosine restarted "
-                f"({plateau_escape_count}/{plateau_max_escapes})"
+                f"({plateau_escape_count}/{plateau_max_escapes}), "
+                f"optimizer_reset={plateau_reset_optimizer}"
             )
 
         # ---- Checkpointing ----------------------------------------------
