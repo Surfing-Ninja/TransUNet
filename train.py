@@ -336,6 +336,18 @@ def train_single_dataset(
             T_max=max(config.num_epochs, 1),
             eta_min=config.eta_min,
         )
+
+    # ---- Plateau-escape fallback ---------------------------------------
+    plateau_patience = max(int(getattr(config, "plateau_patience_epochs", 8)), 1)
+    plateau_min_delta = float(getattr(config, "plateau_min_delta", 1e-3))
+    plateau_lr_boost_factor = float(getattr(config, "plateau_lr_boost_factor", 1.8))
+    plateau_lr_cap = float(getattr(config, "plateau_lr_boost_cap", 1e-3))
+    plateau_max_escapes = max(int(getattr(config, "plateau_max_escapes", 3)), 0)
+    plateau_cooldown = max(int(getattr(config, "plateau_cooldown_epochs", 4)), 0)
+    no_improve_epochs = 0
+    plateau_escape_count = 0
+    plateau_cooldown_remaining = 0
+
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
 
@@ -410,9 +422,51 @@ def train_single_dataset(
                 amp_enabled=amp_enabled,
             )
 
+            improved = val_dice > (best_dice + plateau_min_delta)
+            if improved:
+                no_improve_epochs = 0
+            else:
+                if plateau_cooldown_remaining > 0:
+                    plateau_cooldown_remaining -= 1
+                else:
+                    no_improve_epochs += 1
+
         # Scheduler step
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
+
+        # Plateau fallback: if Dice stagnates, boost LR and restart cosine.
+        trigger_escape = (
+            run_validation
+            and no_improve_epochs >= plateau_patience
+            and plateau_escape_count < plateau_max_escapes
+        )
+        if trigger_escape:
+            old_lr = current_lr
+            boosted_lr = min(
+                max(old_lr * plateau_lr_boost_factor, old_lr + 1e-8),
+                plateau_lr_cap,
+            )
+            for param_group in optimizer.param_groups:
+                param_group["lr"] = boosted_lr
+
+            remaining_epochs = max(config.num_epochs - (epoch + 1), 1)
+            scheduler = optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=remaining_epochs,
+                eta_min=config.eta_min,
+            )
+
+            plateau_escape_count += 1
+            plateau_cooldown_remaining = plateau_cooldown
+            no_improve_epochs = 0
+            current_lr = boosted_lr
+
+            tqdm.write(
+                f"  [plateau-escape e{epoch+1}] Dice stagnated for {plateau_patience} epochs; "
+                f"LR boosted {old_lr:.2e} -> {boosted_lr:.2e} and cosine restarted "
+                f"({plateau_escape_count}/{plateau_max_escapes})"
+            )
 
         # ---- Checkpointing ----------------------------------------------
         is_best = run_validation and (val_dice > best_dice)
@@ -436,6 +490,8 @@ def train_single_dataset(
             stats = aggregator.mean_std()
             for metric_name, (mean_val, _) in stats.items():
                 writer.add_scalar(f"val/{metric_name}", mean_val, epoch)
+            writer.add_scalar("train/no_improve_epochs", no_improve_epochs, epoch)
+            writer.add_scalar("train/plateau_escape_count", plateau_escape_count, epoch)
         writer.add_scalar("val/best_dice", best_dice, epoch)
         writer.add_scalar("lr", current_lr, epoch)
 

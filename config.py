@@ -18,6 +18,12 @@ class Config:
     warmup_epochs: int = 5
     warmup_start_factor: float = 0.1
     eta_min: float = 1e-5
+    plateau_patience_epochs: int = 8
+    plateau_min_delta: float = 1e-3
+    plateau_lr_boost_factor: float = 1.8
+    plateau_lr_boost_cap: float = 1e-3
+    plateau_max_escapes: int = 3
+    plateau_cooldown_epochs: int = 4
     momentum: float = 0.99
     weight_decay: float = 1e-4
     dropout: float = 0.2
