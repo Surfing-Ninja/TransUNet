@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 from models.swin_blocks import BSTM, SDM
 from models.attention_modules import FAM
@@ -51,6 +52,7 @@ class MaSDecoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.use_gradient_checkpointing = bool(getattr(config, "use_gradient_checkpointing", True))
 
         # ---- BSTM bottleneck ---------------------------------------------
         # skip4 (2048, 7, 7) → upsampled (1024, 14, 14) + ds1 (1024, 7, 7)
@@ -107,6 +109,11 @@ class MaSDecoder(nn.Module):
             nn.ReLU(inplace=True),
         )
 
+    def _run_ckpt_2(self, module: nn.Module, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        if self.training and self.use_gradient_checkpointing:
+            return grad_checkpoint(module, x, y, use_reentrant=False)
+        return module(x, y)
+
     def forward(
         self,
         encoder_outputs: dict[str, torch.Tensor],
@@ -133,15 +140,15 @@ class MaSDecoder(nn.Module):
         bottleneck, ds1 = self.bstm(skip4)    # (B, 1024, 14, 14), (B, 1024, 7, 7)
 
         # ---- Decoder stage 1: concat with skip3 at 14×14 -----------------
-        x = self.decoder1(bottleneck, skip3)  # (B, 512, 14, 14)
+        x = self._run_ckpt_2(self.decoder1, bottleneck, skip3)  # (B, 512, 14, 14)
 
         # ---- Decoder stage 2: upsample → concat with skip2 at 28×28 -----
         x = self.up(x)                        # (B, 512, 28, 28)
-        x = self.decoder2(x, skip2)           # (B, 256, 28, 28)
+        x = self._run_ckpt_2(self.decoder2, x, skip2)  # (B, 256, 28, 28)
 
         # ---- Decoder stage 3: upsample → concat with skip1 at 56×56 -----
         x = self.up(x)                        # (B, 256, 56, 56)
-        x = self.decoder3(x, skip1)           # (B, 128, 56, 56)
+        x = self._run_ckpt_2(self.decoder3, x, skip1)  # (B, 128, 56, 56)
 
         # ---- Decoder FAM -------------------------------------------------
         x = self.fam(x, prev_mask)            # (B, 256, 56, 56)

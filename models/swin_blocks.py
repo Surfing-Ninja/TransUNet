@@ -277,7 +277,10 @@ class SDM(nn.Module):
 
         out = _tokens_to_spatial(tokens, H, W)
         for blk in self.blocks:
-            out = blk(out)
+            if self.training:
+                out = grad_checkpoint(blk, out, use_reentrant=False)
+            else:
+                out = blk(out)
         out = _spatial_to_tokens(out)
 
         out = self.patch_embed.reshape_back(out)  # (B, embed_dim, H, W)

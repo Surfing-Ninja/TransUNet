@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torchvision.models as models
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 
 from models.swin_blocks import RSTM
 from models.attention_modules import CAM, FAM, EAM
@@ -20,6 +21,7 @@ class MaSEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+        self.use_gradient_checkpointing = bool(getattr(config, "use_gradient_checkpointing", True))
 
         # ---- ResNet-50 backbone (pretrained) ----------------------------
         resnet = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
@@ -81,6 +83,11 @@ class MaSEncoder(nn.Module):
         # ---- EAM on Block-1 output (256 ch) → edge map -----------------
         self.eam = EAM(in_channels=256)
 
+    def _run_ckpt(self, module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        if self.training and self.use_gradient_checkpointing:
+            return grad_checkpoint(module, x, use_reentrant=False)
+        return module(x)
+
     def forward(
         self,
         image: torch.Tensor,
@@ -107,25 +114,25 @@ class MaSEncoder(nn.Module):
         x = self.fam_proj(x)                    # (B,  64, 56, 56)
 
         # Stage 1
-        x = self.layer1(x)                      # (B, 256, 56, 56)
-        x = self.cam1(x)
-        skip1 = self.rstm1(x)                   # (B, 256, 56, 56)
+        x = self._run_ckpt(self.layer1, x)      # (B, 256, 56, 56)
+        x = self._run_ckpt(self.cam1, x)
+        skip1 = self._run_ckpt(self.rstm1, x)   # (B, 256, 56, 56)
 
         # Edge map from Block-1 features
         edge_map = self.eam(skip1, target_size)  # (B, 1, 224, 224)
 
         # Stage 2
-        x = self.layer2(skip1)                   # (B, 512, 28, 28)
-        x = self.cam2(x)
-        skip2 = self.rstm2(x)                    # (B, 512, 28, 28)
+        x = self._run_ckpt(self.layer2, skip1)   # (B, 512, 28, 28)
+        x = self._run_ckpt(self.cam2, x)
+        skip2 = self._run_ckpt(self.rstm2, x)    # (B, 512, 28, 28)
 
         # Stage 3
-        x = self.layer3(skip2)                   # (B, 1024, 14, 14)
-        x = self.cam3(x)
-        skip3 = self.rstm3(x)                    # (B, 1024, 14, 14)
+        x = self._run_ckpt(self.layer3, skip2)   # (B, 1024, 14, 14)
+        x = self._run_ckpt(self.cam3, x)
+        skip3 = self._run_ckpt(self.rstm3, x)    # (B, 1024, 14, 14)
 
         # Stage 4 (no CAM / RSTM)
-        skip4 = self.layer4(skip3)               # (B, 2048, 7, 7)
+        skip4 = self._run_ckpt(self.layer4, skip3)  # (B, 2048, 7, 7)
 
         return {
             "skip1":    skip1,

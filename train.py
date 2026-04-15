@@ -224,6 +224,7 @@ def train_single_dataset(
         model.parameters(),
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
+        foreach=False,
     )
     warmup_epochs = int(min(max(getattr(config, "warmup_epochs", 0), 0), max(config.num_epochs - 1, 0)))
     if warmup_epochs > 0:

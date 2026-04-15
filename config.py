@@ -11,7 +11,7 @@ class Config:
     image_size: int = 224
     batch_size: int = 2
     num_epochs: int = 100
-    learning_rate: float = 3e-4
+    learning_rate: float = .01
     accumulation_steps: int = 4
     fam_warmup_epochs: int = 1
     warmup_epochs: int = 5
@@ -31,6 +31,9 @@ class Config:
 
     # Overfit-debug mode
     overfit_samples: int = 0
+
+    # Memory safety
+    use_gradient_checkpointing: bool = True
 
     # Swin Transformer
     window_size: int = 7          # Swin Transformer window size
@@ -141,7 +144,7 @@ class Config:
         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
         if total_memory_gb >= 24:
             return 4
-        if total_memory_gb >= 10:
+        if total_memory_gb >= 16:
             return 2
         return 1
 
@@ -159,9 +162,13 @@ class Config:
 
         total_memory_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
 
-        # Kaggle T4/L4 class GPUs (~15-16GB) benefit from higher gradient
-        # accumulation with AdamW to keep per-step memory lower.
-        if is_kaggle and 10 <= total_memory_gb < 24:
+        # Kaggle T4 class GPUs (~15GB) need higher accumulation since
+        # batch_size is forced to 1 for memory safety.
+        if is_kaggle and 10 <= total_memory_gb < 16:
+            return max(default_steps, 16)
+
+        # L4/V100 class GPUs can usually handle batch_size=2 safely.
+        if is_kaggle and 16 <= total_memory_gb < 24:
             return max(default_steps, 8)
 
         return default_steps
