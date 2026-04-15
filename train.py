@@ -28,14 +28,6 @@ from utils.checkpointing import (
 from evaluate import evaluate_dataset
 
 
-def _is_cuda_oom(exc: BaseException) -> bool:
-    oom_type = getattr(torch.cuda, "OutOfMemoryError", None)
-    if oom_type is not None and isinstance(exc, oom_type):
-        return True
-    msg = str(exc).lower()
-    return "cuda out of memory" in msg or "out of memory" in msg
-
-
 def _clear_cuda_memory() -> None:
     gc.collect()
     if torch.cuda.is_available():
@@ -380,6 +372,10 @@ def train_single_dataset(
     else:
         print(f"  [No best checkpoint found at {best_ckpt}; evaluation skipped]\n")
 
+    # Explicitly release large objects before moving to the next dataset.
+    del model, optimizer, scheduler, criterion, train_loader, test_loader
+    _clear_cuda_memory()
+
     results_table[dataset_name] = best_dice
     return best_dice
 
@@ -457,30 +453,14 @@ def main():
     # Train each dataset sequentially
     results_table = {}
     for ds_name in datasets_to_train:
-        retry_count = 0
         try:
-            while True:
-                try:
-                    train_single_dataset(
-                        ds_name,
-                        config,
-                        device,
-                        results_table,
-                        overfit_samples=config.overfit_samples,
-                    )
-                    break
-                except RuntimeError as e:
-                    if not (device.startswith("cuda") and _is_cuda_oom(e) and config.batch_size > 1):
-                        raise
-
-                    retry_count += 1
-                    old_bs = config.batch_size
-                    config.batch_size = max(1, old_bs // 2)
-                    print(
-                        f"\n  [OOM] {ds_name}: reducing batch_size {old_bs} -> {config.batch_size} and retrying "
-                        f"(attempt {retry_count})"
-                    )
-                    _clear_cuda_memory()
+            train_single_dataset(
+                ds_name,
+                config,
+                device,
+                results_table,
+                overfit_samples=config.overfit_samples,
+            )
         except Exception as e:
             print(f"\n  [ERROR training {ds_name}: {e}]")
             print(f"  [Continuing to next dataset…]\n")

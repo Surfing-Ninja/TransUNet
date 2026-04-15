@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint as grad_checkpoint
 from einops import rearrange
 from timm.models.swin_transformer import SwinTransformerBlock
 
@@ -146,7 +147,10 @@ class RSTM(nn.Module):
 
         out = _tokens_to_spatial(tokens, H, W)  # (B, H, W, D)
         for blk in self.blocks:
-            out = blk(out)                       # (B, H, W, D)
+            if self.training:
+                out = grad_checkpoint(blk, out, use_reentrant=False)
+            else:
+                out = blk(out)                   # (B, H, W, D)
         out = _spatial_to_tokens(out)            # (B, N, D)
 
         out = self.proj(out)                   # (B, N, D)
@@ -203,7 +207,10 @@ class BSTM(nn.Module):
 
         out = _tokens_to_spatial(tokens, H, W)
         for blk in self.blocks:
-            out = blk(out)
+            if self.training:
+                out = grad_checkpoint(blk, out, use_reentrant=False)
+            else:
+                out = blk(out)
         out = _spatial_to_tokens(out)
 
         out = self.patch_embed.reshape_back(out)     # (B, embed_dim, H, W)
