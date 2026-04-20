@@ -485,6 +485,8 @@ def get_dataloaders(
         num_workers=config.num_workers,
         pin_memory=pin_memory,
         drop_last=False,
+        persistent_workers=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
     )
     test_loader = DataLoader(
         test_ds,
@@ -492,6 +494,8 @@ def get_dataloaders(
         shuffle=False,
         num_workers=config.num_workers,
         pin_memory=pin_memory,
+        persistent_workers=config.num_workers > 0,
+        prefetch_factor=2 if config.num_workers > 0 else None,
     )
 
     return train_loader, test_loader

@@ -100,14 +100,8 @@ class MaSDecoder(nn.Module):
         self.seg_head = nn.Conv2d(129, 1, kernel_size=1)
 
         # ---- Deep-supervision heads --------------------------------------
-        self.ds1_head = nn.Sequential(
-            nn.Conv2d(1024, 1, kernel_size=1),
-            nn.ReLU(inplace=True),
-        )
-        self.ds2_head = nn.Sequential(
-            nn.Conv2d(128, 1, kernel_size=1),
-            nn.ReLU(inplace=True),
-        )
+        self.ds1_head = nn.Conv2d(1024, 1, kernel_size=1)
+        self.ds2_head = nn.Conv2d(128, 1, kernel_size=1)
 
     def _run_ckpt_2(self, module: nn.Module, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         if self.training and self.use_gradient_checkpointing:

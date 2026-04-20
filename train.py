@@ -18,7 +18,7 @@ from config import CFG
 from dataset import get_dataloaders, MedicalSegDataset
 from losses import MaSLoss
 from models import build_model
-from utils.metrics import SegmentationMetrics, MetricAggregator
+from utils.metrics import MetricAggregator
 from utils.checkpointing import (
     save_checkpoint,
     load_latest_checkpoint,
@@ -226,7 +226,6 @@ def validate(
     loader,
     aggregator: MetricAggregator,
     device: str,
-    full_metrics: bool = True,
     fam_refine_iters: int = 1,
     val_dataset: MedicalSegDataset | None = None,
     threshold: float = 0.5,
@@ -235,8 +234,6 @@ def validate(
     """Run validation / test evaluation.
 
     Args:
-        full_metrics: If True, compute the full metric suite (Hausdorff,
-            SSIM, S-measure, etc.).  If False, compute only Dice for speed.
         fam_refine_iters: Number of additional feedback refinement passes
             during validation (1 means total 2 forward passes).
         val_dataset: Validation dataset to update with latest predicted
@@ -271,16 +268,13 @@ def validate(
                     val_dataset.update_prev_mask(fname, pred_uint8[i])
 
             for i in range(preds.shape[0]):
-                pred_bin = (preds[i, 0] >= threshold).astype(np.uint8)
-                gt_bin = (masks_np[i, 0] >= threshold).astype(np.uint8)
-
-                if full_metrics:
-                    metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
-                else:
-                    metrics = SegmentationMetrics.compute(pred_bin, gt_bin)
-                    metrics = {"dice": metrics["dice"]}
-
-                aggregator.update(metrics)
+                eps = 1e-6
+                pred_bin = preds[i, 0] >= 0.5
+                gt_bin = masks_np[i, 0] >= 0.5
+                inter = np.sum(pred_bin & gt_bin)
+                denom = np.sum(pred_bin) + np.sum(gt_bin)
+                dice = float((2.0 * inter + eps) / (denom + eps))
+                aggregator.update({"dice": dice})
 
     stats = aggregator.mean_std()
     mean_dice = stats["dice"][0] if stats else 0.0
@@ -397,6 +391,7 @@ def train_single_dataset(
 
     # ---- Metric aggregator -----------------------------------------------
     aggregator = MetricAggregator()
+    val_interval = max(int(getattr(config, "val_interval", 3)), 1)
     # ---- Training loop ---------------------------------------------------
     epoch_bar = tqdm(
         range(start_epoch, config.num_epochs),
@@ -419,19 +414,16 @@ def train_single_dataset(
             config.fam_warmup_epochs,
         )
 
-        # Validate every epoch for smoother best-Dice tracking.
-        run_validation = True
+        # Validate on the configured interval.
+        run_validation = ((epoch + 1) % val_interval == 0)
         val_dice = None
         if run_validation:
-            validation_count = (epoch + 1)
-            full_metrics = (validation_count % 6 == 0)
             val_dice = validate(
                 model,
                 test_loader,
                 aggregator,
                 device,
-                full_metrics=full_metrics,
-                fam_refine_iters=1,
+                fam_refine_iters=0,
                 val_dataset=None,   # stateless: don't corrupt test prev_masks
                 threshold=float(getattr(config, "metric_threshold", 0.5)),
                 amp_enabled=amp_enabled,
