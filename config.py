@@ -53,8 +53,8 @@ class Config:
 
     # Loss
     lambda_weight: float = 1.0    # BCE weight in primary loss
-    boundary_loss_weight: float = 0.15
-    ds_loss_weight: float = 0.2
+    boundary_loss_weight: float = 1.0
+    ds_loss_weight: float = 1.0
 
     # Test-time refinement
     num_refinement_iters: int = 10  # test-time FAM iterations

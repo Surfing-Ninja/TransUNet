@@ -220,13 +220,12 @@ class BSTM(nn.Module):
 
 
 class SDM(nn.Module):
-    """Swin Decoder Module – convolutional preprocessing followed by 4
-    Swin Transformer Blocks.
+    """Swin Decoder Module – reshape/tokens through 4 Swin Transformer
+    Blocks followed by convolutional post-processing.
 
     Returns:
-        conv_out:  (B, out_dim, H, W) – main output
-        ds2:       (B, out_dim, H, W) – deep supervision output from post-STB
-                                        features
+        features:  (B, out_dim, H, W) – refined decoder features
+        ds2:       (B, out_dim, H, W) – deep supervision signal
     """
 
     def __init__(
@@ -243,17 +242,7 @@ class SDM(nn.Module):
         self.input_resolution = input_resolution
         self.embed_dim = embed_dim or dim
 
-        # Paper-aligned SDM ordering: conv preprocessing before transformer.
-        self.pre_conv = nn.Sequential(
-            nn.Conv2d(dim, dim, kernel_size=3, padding=1),
-            _group_norm(dim),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(dim, self.embed_dim, kernel_size=1),
-            _group_norm(self.embed_dim),
-            nn.ReLU(inplace=True),
-        )
-
-        self.patch_embed = PatchEmbedding(self.embed_dim, self.embed_dim, input_resolution)
+        self.patch_embed = PatchEmbedding(dim, self.embed_dim, input_resolution)
 
         self.blocks = nn.ModuleList([
             _build_swin_block(
@@ -267,11 +256,20 @@ class SDM(nn.Module):
             for i in range(4)
         ])
 
-        self.ds2_proj = nn.Conv2d(self.embed_dim, out_dim, kernel_size=1)
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(self.embed_dim, dim, kernel_size=3, padding=1),
+            _group_norm(dim),
+            nn.ReLU(inplace=True),
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(dim, out_dim, kernel_size=1),
+            _group_norm(out_dim),
+            nn.ReLU(inplace=True),
+        )
+        self.ds2_proj = nn.Conv2d(dim, out_dim, kernel_size=1)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """x: (B, C, H, W) → (conv_out, ds2)"""
-        x = self.pre_conv(x)
+        """x: (B, C, H, W) → (features, ds2)"""
         tokens = self.patch_embed(x)
         H, W = self.patch_embed.H, self.patch_embed.W
 
@@ -284,5 +282,7 @@ class SDM(nn.Module):
         out = _spatial_to_tokens(out)
 
         out = self.patch_embed.reshape_back(out)  # (B, embed_dim, H, W)
+        out = self.conv1(out)                     # (B, dim, H, W)
+        features = self.conv2(out)                # (B, out_dim, H, W)
         ds2 = self.ds2_proj(out)                  # (B, out_dim, H, W)
-        return ds2, ds2
+        return features, ds2

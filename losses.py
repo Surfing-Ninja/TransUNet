@@ -17,8 +17,8 @@ class MaSLoss(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.lambda_weight = config.lambda_weight  # BCE weight in primary loss
-        self.boundary_loss_weight = float(getattr(config, "boundary_loss_weight", 0.15))
-        self.ds_loss_weight = float(getattr(config, "ds_loss_weight", 0.2))
+        self.boundary_loss_weight = float(getattr(config, "boundary_loss_weight", 1.0))
+        self.ds_loss_weight = float(getattr(config, "ds_loss_weight", 1.0))
 
     # ------------------------------------------------------------------
     # Private losses

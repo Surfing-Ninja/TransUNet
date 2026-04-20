@@ -139,7 +139,8 @@ class FAM(nn.Module):
             prev_mask_resized = F.interpolate(
                 prev_mask.float(),
                 size=(H, W),
-                mode="nearest",
+                mode="bilinear",
+                align_corners=False,
             )
         prev_mask_resized = (prev_mask_resized >= 0.5).float()
         union_mask = torch.maximum(current_binary, prev_mask_resized)
