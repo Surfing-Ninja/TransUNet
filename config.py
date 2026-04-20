@@ -11,8 +11,7 @@ class Config:
     image_size: int = 224
     batch_size: int = 2
     num_epochs: int = 100
-    # Stable default for AdamW. If switching back to SGD, use 1e-2.
-    learning_rate: float = 3e-4
+    learning_rate: float = 0.01
     accumulation_steps: int = 4
     fam_warmup_epochs: int = 1
     warmup_epochs: int = 2

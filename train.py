@@ -2,10 +2,7 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
-if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
-    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 import argparse
-import gc
 
 import numpy as np
 import torch
@@ -26,44 +23,6 @@ from utils.checkpointing import (
     load_epoch_masks,
 )
 from evaluate import evaluate_dataset
-
-
-def _clear_cuda_memory() -> None:
-    gc.collect()
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
-
-def _reset_optimizer_state(optimizer: optim.Optimizer) -> None:
-    """Reset adaptive optimizer moments (e.g., AdamW exp_avg/exp_avg_sq).
-
-    This gives a stronger escape step when validation is stuck in a local basin.
-    """
-    for state in optimizer.state.values():
-        if not isinstance(state, dict):
-            continue
-        for key, value in state.items():
-            if torch.is_tensor(value):
-                value.zero_()
-
-
-def _nonfinite_tensor_report(name: str, tensor: torch.Tensor) -> str | None:
-    if torch.isfinite(tensor).all():
-        return None
-
-    t = tensor.detach().float()
-    nan_count = int(torch.isnan(t).sum().item())
-    inf_count = int(torch.isinf(t).sum().item())
-    finite_vals = t[torch.isfinite(t)]
-    if finite_vals.numel() > 0:
-        abs_max = float(finite_vals.abs().max().item())
-    else:
-        abs_max = float("nan")
-
-    return (
-        f"{name}(nan={nan_count}, inf={inf_count}, "
-        f"finite_abs_max={abs_max:.3e})"
-    )
 
 
 # ======================================================================
@@ -99,61 +58,22 @@ def train_one_epoch(
         unit="batch",
     )
 
-    optimizer.zero_grad(set_to_none=True)
-    amp_enabled = scaler.is_enabled()
-    skipped_nonfinite = 0
-    first_nonfinite_reported = False
+    optimizer.zero_grad()
 
     use_fam_feedback = epoch >= fam_warmup_epochs
 
     for batch_idx, batch in enumerate(batch_bar, start=1):
-        images = batch["image"].to(device, non_blocking=True)
-        masks = batch["mask"].to(device, non_blocking=True)
-        edges = batch["edge"].to(device, non_blocking=True)
-        prev_masks = batch["prev_mask"].to(device, non_blocking=True)
+        images = batch["image"].to(device)
+        masks = batch["mask"].to(device)
+        edges = batch["edge"].to(device)
+        prev_masks = batch["prev_mask"].to(device)
         filenames = batch["filename"]
 
         # Forward in autocast, loss in float32
-        with autocast("cuda", enabled=amp_enabled):
+        with autocast("cuda", enabled=device.startswith("cuda")):
             outputs = model(images, prev_masks)
-
-        output_reports = []
-        for out_name, out_tensor in outputs.items():
-            rep = _nonfinite_tensor_report(out_name, out_tensor)
-            if rep is not None:
-                output_reports.append(rep)
-
-        if output_reports:
-            skipped_nonfinite += 1
-            optimizer.zero_grad(set_to_none=True)
-            if scaler.is_enabled():
-                scaler.update()
-
-            if (not first_nonfinite_reported) or (batch_idx % 20 == 0):
-                tqdm.write(
-                    f"  [e{epoch+1} b{batch_idx}] non-finite model outputs: "
-                    + "; ".join(output_reports)
-                )
-                first_nonfinite_reported = True
-
-            del images, masks, edges, prev_masks, outputs, output_reports
-            continue
-
         targets = {"mask": masks, "edge": edges}
         total_loss, loss_dict = criterion(outputs, targets)
-
-        if not torch.isfinite(total_loss.detach()):
-            skipped_nonfinite += 1
-            optimizer.zero_grad(set_to_none=True)
-            if scaler.is_enabled():
-                scaler.update()
-            if batch_idx % 20 == 0 or skipped_nonfinite <= 3:
-                tqdm.write(
-                    f"  [e{epoch+1} b{batch_idx}] non-finite loss detected; "
-                    f"skipping batch (count={skipped_nonfinite})"
-                )
-            del images, masks, edges, prev_masks, outputs, targets, total_loss
-            continue
 
         # Backward (gradient accumulation with AMP)
         loss_for_backward = total_loss / accumulation_steps
@@ -161,22 +81,10 @@ def train_one_epoch(
 
         if batch_idx % accumulation_steps == 0:
             scaler.unscale_(optimizer)
-            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            if not torch.isfinite(grad_norm):
-                skipped_nonfinite += 1
-                optimizer.zero_grad(set_to_none=True)
-                if scaler.is_enabled():
-                    scaler.update()
-                if batch_idx % 20 == 0 or skipped_nonfinite <= 3:
-                    tqdm.write(
-                        f"  [e{epoch+1} b{batch_idx}] non-finite grad norm detected; "
-                        f"skipping optimizer step (count={skipped_nonfinite})"
-                    )
-                del grad_norm
-                continue
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             scaler.step(optimizer)
             scaler.update()
-            optimizer.zero_grad(set_to_none=True)
+            optimizer.zero_grad()
 
         running_loss += total_loss.item()
         num_batches += 1
@@ -194,29 +102,12 @@ def train_one_epoch(
                 mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
                 dataset.update_prev_mask(fname, mask_hw)
 
-        # Drop large references promptly to reduce peak retained memory.
-        del images, masks, edges, prev_masks, outputs, targets, total_loss, loss_for_backward
-
     if num_batches > 0 and num_batches % accumulation_steps != 0:
         scaler.unscale_(optimizer)
-        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        if torch.isfinite(grad_norm):
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad(set_to_none=True)
-        else:
-            skipped_nonfinite += 1
-            optimizer.zero_grad(set_to_none=True)
-            if scaler.is_enabled():
-                scaler.update()
-            tqdm.write(
-                f"  [e{epoch+1}] non-finite grad norm at epoch tail; "
-                f"skipping final optimizer step (count={skipped_nonfinite})"
-            )
-        del grad_norm
-
-    if skipped_nonfinite > 0:
-        tqdm.write(f"  [e{epoch+1}] skipped {skipped_nonfinite} non-finite updates")
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        scaler.step(optimizer)
+        scaler.update()
+        optimizer.zero_grad()
 
     return running_loss / max(num_batches, 1)
 
@@ -228,8 +119,6 @@ def validate(
     device: str,
     fam_refine_iters: int = 1,
     val_dataset: MedicalSegDataset | None = None,
-    threshold: float = 0.5,
-    amp_enabled: bool = True,
 ) -> float:
     """Run validation / test evaluation.
 
@@ -255,15 +144,14 @@ def validate(
             # Validation feedback refinement to avoid stale Otsu-only prev masks.
             num_passes = max(1, fam_refine_iters + 1)
             for _ in range(num_passes):
-                with autocast("cuda", enabled=amp_enabled):
+                with autocast("cuda", enabled=device.startswith("cuda")):
                     outputs = model(images, prev_masks)
-                prev_masks = (torch.sigmoid(outputs["pred_mask"]) >= threshold).float().detach()
+                prev_masks = torch.sigmoid(outputs["pred_mask"]).detach()
 
             preds = torch.sigmoid(outputs["pred_mask"]).cpu().numpy().astype(np.float32)  # (B, 1, H, W)
-            preds = np.nan_to_num(preds, nan=0.0, posinf=1.0, neginf=0.0)
 
             if val_dataset is not None:
-                pred_uint8 = (preds[:, 0] >= threshold).astype(np.uint8) * 255
+                pred_uint8 = (preds[:, 0] >= 0.5).astype(np.uint8) * 255
                 for i, fname in enumerate(filenames):
                     val_dataset.update_prev_mask(fname, pred_uint8[i])
 
@@ -287,19 +175,13 @@ def validate(
 
 
 def train_single_dataset(
-    dataset_name: str,
-    config,
-    device: str,
-    results_table: dict,
-    overfit_samples: int = 0,
+    dataset_name: str, config, device: str, results_table: dict
 ) -> float:
     """Train and evaluate a single dataset. Returns best Dice score."""
     print(f"\n{'='*70}")
     print(f"  DATASET: {dataset_name:15s}  |  batch_size={config.batch_size}  num_workers={config.num_workers}")
     print(f"  accumulation_steps={config.accumulation_steps}  effective_batch_size={config.batch_size * config.accumulation_steps}")
     print(f"  fam_warmup_epochs={config.fam_warmup_epochs}")
-    if overfit_samples > 0:
-        print(f"  OVERFIT DEBUG MODE: using {overfit_samples} training samples only")
     print(f"{'='*70}\n")
 
     # ---- Model -----------------------------------------------------------
@@ -308,64 +190,28 @@ def train_single_dataset(
     # ---- AMP scaler ------------------------------------------------------
     # init_scale=256 avoids the default 65536 which causes fp16 gradient
     # overflow → GradScaler silently skips optimizer steps with SGD.
-    amp_enabled = bool(getattr(config, "use_amp", True)) and device.startswith("cuda")
     scaler = GradScaler(
-        "cuda", enabled=amp_enabled, init_scale=256,
+        "cuda", enabled=device.startswith("cuda"), init_scale=256,
     )
 
     # ---- Optimizer / scheduler -------------------------------------------
-    optimizer = optim.AdamW(
+    optimizer = optim.SGD(
         model.parameters(),
         lr=config.learning_rate,
+        momentum=config.momentum,
         weight_decay=config.weight_decay,
-        foreach=False,
+        nesterov=True,
     )
-    warmup_epochs = int(min(max(getattr(config, "warmup_epochs", 0), 0), max(config.num_epochs - 1, 0)))
-    if warmup_epochs > 0:
-        warmup_scheduler = optim.lr_scheduler.LinearLR(
-            optimizer,
-            start_factor=float(getattr(config, "warmup_start_factor", 0.1)),
-            total_iters=warmup_epochs,
-        )
-        cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=max(config.num_epochs - warmup_epochs, 1),
-            eta_min=config.eta_min,
-        )
-        scheduler = optim.lr_scheduler.SequentialLR(
-            optimizer,
-            schedulers=[warmup_scheduler, cosine_scheduler],
-            milestones=[warmup_epochs],
-        )
-    else:
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=max(config.num_epochs, 1),
-            eta_min=config.eta_min,
-        )
-
-    # ---- Plateau-escape fallback ---------------------------------------
-    plateau_patience = max(int(getattr(config, "plateau_patience_epochs", 8)), 1)
-    plateau_min_delta = float(getattr(config, "plateau_min_delta", 1e-3))
-    plateau_lr_boost_factor = float(getattr(config, "plateau_lr_boost_factor", 1.8))
-    plateau_lr_cap = float(getattr(config, "plateau_lr_boost_cap", 1e-3))
-    plateau_max_escapes = max(int(getattr(config, "plateau_max_escapes", 3)), 0)
-    plateau_cooldown = max(int(getattr(config, "plateau_cooldown_epochs", 4)), 0)
-    plateau_start_epoch = max(int(getattr(config, "plateau_start_epoch", 3)), 0)
-    plateau_reset_optimizer = bool(getattr(config, "plateau_reset_optimizer_state", True))
-    no_improve_epochs = 0
-    plateau_escape_count = 0
-    plateau_cooldown_remaining = 0
-
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=config.num_epochs,
+        eta_min=config.eta_min,
+    )
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
 
     # ---- Data ------------------------------------------------------------
-    train_loader, test_loader = get_dataloaders(
-        dataset_name,
-        config,
-        overfit_samples=overfit_samples,
-    )
+    train_loader, test_loader = get_dataloaders(dataset_name, config)
     train_dataset: MedicalSegDataset = train_loader.dataset
     print(
         f"Data ready: train={len(train_dataset)} | test={len(test_loader.dataset)} | "
@@ -391,7 +237,8 @@ def train_single_dataset(
 
     # ---- Metric aggregator -----------------------------------------------
     aggregator = MetricAggregator()
-    val_interval = max(int(getattr(config, "val_interval", 3)), 1)
+    val_interval = 3
+
     # ---- Training loop ---------------------------------------------------
     epoch_bar = tqdm(
         range(start_epoch, config.num_epochs),
@@ -425,60 +272,11 @@ def train_single_dataset(
                 device,
                 fam_refine_iters=0,
                 val_dataset=None,   # stateless: don't corrupt test prev_masks
-                threshold=float(getattr(config, "metric_threshold", 0.5)),
-                amp_enabled=amp_enabled,
             )
-
-            improved = val_dice > (best_dice + plateau_min_delta)
-            if improved:
-                no_improve_epochs = 0
-            else:
-                if plateau_cooldown_remaining > 0:
-                    plateau_cooldown_remaining -= 1
-                else:
-                    no_improve_epochs += 1
 
         # Scheduler step
         scheduler.step()
         current_lr = optimizer.param_groups[0]["lr"]
-
-        # Plateau fallback: if Dice stagnates, boost LR and restart cosine.
-        trigger_escape = (
-            run_validation
-            and (epoch + 1) >= plateau_start_epoch
-            and no_improve_epochs >= plateau_patience
-            and plateau_escape_count < plateau_max_escapes
-        )
-        if trigger_escape:
-            old_lr = current_lr
-            boosted_lr = min(
-                max(old_lr * plateau_lr_boost_factor, old_lr + 1e-8),
-                plateau_lr_cap,
-            )
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = boosted_lr
-
-            if plateau_reset_optimizer:
-                _reset_optimizer_state(optimizer)
-
-            remaining_epochs = max(config.num_epochs - (epoch + 1), 1)
-            scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                optimizer,
-                T_max=remaining_epochs,
-                eta_min=config.eta_min,
-            )
-
-            plateau_escape_count += 1
-            plateau_cooldown_remaining = plateau_cooldown
-            no_improve_epochs = 0
-            current_lr = boosted_lr
-
-            tqdm.write(
-                f"  [plateau-escape e{epoch+1}] Dice stagnated for {plateau_patience} epochs; "
-                f"LR boosted {old_lr:.2e} -> {boosted_lr:.2e} and cosine restarted "
-                f"({plateau_escape_count}/{plateau_max_escapes}), "
-                f"optimizer_reset={plateau_reset_optimizer}"
-            )
 
         # ---- Checkpointing ----------------------------------------------
         is_best = run_validation and (val_dice > best_dice)
@@ -502,8 +300,6 @@ def train_single_dataset(
             stats = aggregator.mean_std()
             for metric_name, (mean_val, _) in stats.items():
                 writer.add_scalar(f"val/{metric_name}", mean_val, epoch)
-            writer.add_scalar("train/no_improve_epochs", no_improve_epochs, epoch)
-            writer.add_scalar("train/plateau_escape_count", plateau_escape_count, epoch)
         writer.add_scalar("val/best_dice", best_dice, epoch)
         writer.add_scalar("lr", current_lr, epoch)
 
@@ -528,10 +324,6 @@ def train_single_dataset(
             print(f"  [Evaluation skipped due to error: {e}]\n")
     else:
         print(f"  [No best checkpoint found at {best_ckpt}; evaluation skipped]\n")
-
-    # Explicitly release large objects before moving to the next dataset.
-    del model, optimizer, scheduler, criterion, train_loader, test_loader
-    _clear_cuda_memory()
 
     results_table[dataset_name] = best_dice
     return best_dice
@@ -569,12 +361,6 @@ def main():
         default=None,
         help="Absolute path to local datasets root (overrides base_data_dir).",
     )
-    parser.add_argument(
-        "--overfit-samples",
-        type=int,
-        default=0,
-        help="If >0, train/evaluate on only N training images to debug overfitting.",
-    )
     args = parser.parse_args()
     dataset_spec = args.dataset_name
 
@@ -583,22 +369,10 @@ def main():
         raise ValueError("--data-dir must be an absolute path, e.g. /Users/name/datasets or C:/datasets")
     config.configure_runtime(force_local=args.local, data_dir=args.data_dir)
     config.fast_mode = args.fast
-    config.overfit_samples = max(0, int(args.overfit_samples))
-    if config.overfit_samples > 0:
-        config.foreground_sampling = False
     device = config.device
 
     if device == "cpu":
         print("[WARNING] Training is running on CPU. This is slow and may hurt convergence; use a CUDA GPU when possible.")
-    elif device.startswith("cuda"):
-        alloc_conf = os.environ.get("PYTORCH_CUDA_ALLOC_CONF", "")
-        mem_gb = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
-        print(
-            f"[CUDA] total_mem={mem_gb:.2f}GB, batch_size={config.batch_size}, "
-            f"accumulation_steps={config.accumulation_steps}, use_amp={bool(getattr(config, 'use_amp', True))}"
-        )
-        if alloc_conf:
-            print(f"[CUDA] PYTORCH_CUDA_ALLOC_CONF={alloc_conf}")
 
     # Determine which datasets to train on
     all_datasets = ["mri_glioma", "kvasir_seg", "isic2018", "covid_ct"]
@@ -611,18 +385,11 @@ def main():
     results_table = {}
     for ds_name in datasets_to_train:
         try:
-            train_single_dataset(
-                ds_name,
-                config,
-                device,
-                results_table,
-                overfit_samples=config.overfit_samples,
-            )
+            train_single_dataset(ds_name, config, device, results_table)
         except Exception as e:
             print(f"\n  [ERROR training {ds_name}: {e}]")
             print(f"  [Continuing to next dataset…]\n")
             results_table[ds_name] = None
-            _clear_cuda_memory()
             continue
 
     # ---- Print summary table --------------------------------------------
@@ -633,7 +400,7 @@ def main():
     sep = "-" * len(header)
     print(f"  {header}")
     print(f"  {sep}")
-    for ds_name in datasets_to_train:
+    for ds_name in all_datasets:
         if ds_name in results_table:
             dice = results_table[ds_name]
             if dice is not None:
