@@ -2,7 +2,10 @@ import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module="torch.functional")
 import os
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "2"
+if "PYTORCH_CUDA_ALLOC_CONF" not in os.environ:
+    os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True,max_split_size_mb:128"
 import argparse
+import gc
 
 import numpy as np
 import torch
@@ -58,56 +61,66 @@ def train_one_epoch(
         unit="batch",
     )
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
 
     use_fam_feedback = epoch >= fam_warmup_epochs
 
     for batch_idx, batch in enumerate(batch_bar, start=1):
-        images = batch["image"].to(device)
-        masks = batch["mask"].to(device)
-        edges = batch["edge"].to(device)
-        prev_masks = batch["prev_mask"].to(device)
-        filenames = batch["filename"]
+        try:
+            images = batch["image"].to(device)
+            masks = batch["mask"].to(device)
+            edges = batch["edge"].to(device)
+            prev_masks = batch["prev_mask"].to(device)
+            filenames = batch["filename"]
 
-        # Forward in autocast, loss in float32
-        with autocast("cuda", enabled=device.startswith("cuda")):
-            outputs = model(images, prev_masks)
-        targets = {"mask": masks, "edge": edges}
-        total_loss, loss_dict = criterion(outputs, targets)
+            # Forward in autocast, loss in float32
+            with autocast("cuda", enabled=device.startswith("cuda")):
+                outputs = model(images, prev_masks)
+            targets = {"mask": masks, "edge": edges}
+            total_loss, loss_dict = criterion(outputs, targets)
 
-        # Backward (gradient accumulation with AMP)
-        loss_for_backward = total_loss / accumulation_steps
-        scaler.scale(loss_for_backward).backward()
+            # Backward (gradient accumulation with AMP)
+            loss_for_backward = total_loss / accumulation_steps
+            scaler.scale(loss_for_backward).backward()
 
-        if batch_idx % accumulation_steps == 0:
-            scaler.unscale_(optimizer)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            scaler.step(optimizer)
-            scaler.update()
-            optimizer.zero_grad()
+            if batch_idx % accumulation_steps == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
 
-        running_loss += total_loss.item()
-        num_batches += 1
-        batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
+            running_loss += total_loss.item()
+            num_batches += 1
+            batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
 
-        # Log loss components and AMP scale periodically
-        if batch_idx % 50 == 0:
-            ld = {k: f"{v.item():.3f}" for k, v in loss_dict.items()}
-            scale = f"{scaler.get_scale():.0f}" if scaler.is_enabled() else "off"
-            tqdm.write(f"  [e{epoch+1} b{batch_idx}] {ld}  scale={scale}")
+            # Log loss components and AMP scale periodically
+            if batch_idx % 50 == 0:
+                ld = {k: f"{v.item():.3f}" for k, v in loss_dict.items()}
+                scale = f"{scaler.get_scale():.0f}" if scaler.is_enabled() else "off"
+                tqdm.write(f"  [e{epoch+1} b{batch_idx}] {ld}  scale={scale}")
 
-        if use_fam_feedback:
-            pred_np = (torch.sigmoid(outputs["pred_mask"]) >= 0.5).detach().cpu().numpy()
-            for i, fname in enumerate(filenames):
-                mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
-                dataset.update_prev_mask(fname, mask_hw)
+            if use_fam_feedback:
+                pred_np = (torch.sigmoid(outputs["pred_mask"]) >= 0.5).detach().cpu().numpy()
+                for i, fname in enumerate(filenames):
+                    mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
+                    dataset.update_prev_mask(fname, mask_hw)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                tqdm.write(f"  [e{epoch+1} b{batch_idx}] CUDA OOM; skipping batch and clearing cache")
+                optimizer.zero_grad(set_to_none=True)
+                if device.startswith("cuda") and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+                continue
+            raise
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
         scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         scaler.step(optimizer)
         scaler.update()
-        optimizer.zero_grad()
+        optimizer.zero_grad(set_to_none=True)
 
     return running_loss / max(num_batches, 1)
 
@@ -198,6 +211,7 @@ def train_single_dataset(
         lr=config.learning_rate,
         weight_decay=config.weight_decay,
         betas=(0.9, 0.999),
+        foreach=False,
     )
     warmup_epochs = max(int(getattr(config, "warmup_epochs", 5)), 0)
     warmup_scheduler = optim.lr_scheduler.LinearLR(
