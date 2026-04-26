@@ -50,10 +50,11 @@ class MaSEncoder(nn.Module):
         )
 
         # ---- Stage 1: CAM + RSTM (256 ch, 56×56) -----------------------
-        # embed_dim = dim (no bottleneck, matches paper exactly)
+        # embed_dim = swin_embed_dim (projects down for memory efficiency)
         self.cam1 = CAM(channels=256)
         self.rstm1 = RSTM(
             dim=256,
+            embed_dim=config.swin_embed_dim,
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(56, 56),
@@ -64,6 +65,7 @@ class MaSEncoder(nn.Module):
         self.cam2 = CAM(channels=512)
         self.rstm2 = RSTM(
             dim=512,
+            embed_dim=config.swin_embed_dim,
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(28, 28),
@@ -74,6 +76,7 @@ class MaSEncoder(nn.Module):
         self.cam3 = CAM(channels=1024)
         self.rstm3 = RSTM(
             dim=1024,
+            embed_dim=config.swin_embed_dim,
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(14, 14),

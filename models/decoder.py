@@ -58,6 +58,7 @@ class MaSDecoder(nn.Module):
         # skip4 (2048, 7, 7) → upsampled (1024, 14, 14) + ds1 (1024, 7, 7)
         self.bstm = BSTM(
             dim=2048,
+            embed_dim=config.swin_embed_dim,
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(7, 7),
@@ -89,6 +90,7 @@ class MaSDecoder(nn.Module):
         self.sdm = SDM(
             dim=128,
             out_dim=128,
+            embed_dim=min(config.swin_embed_dim, 128),
             num_heads=config.num_heads,
             window_size=config.window_size,
             input_resolution=(56, 56),

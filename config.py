@@ -42,6 +42,9 @@ class Config:
     swin_rstm_depth: int = 6      # number of STBs in RSTM
     swin_bstm_depth: int = 12     # number of STBs in BSTM
     swin_sdm_depth: int = 4       # number of STBs in SDM
+    swin_embed_dim: int = 256     # internal embed dim for all Swin modules
+                                  # (projects from ResNet channels down to this
+                                  #  before self-attention, then back up)
 
     # Loss
     lambda_weight: float = 1.0    # BCE weight in primary loss
