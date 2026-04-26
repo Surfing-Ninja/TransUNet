@@ -83,16 +83,10 @@ def train_one_epoch(
             loss_for_backward = total_loss / accumulation_steps
             scaler.scale(loss_for_backward).backward()
 
-            if batch_idx % accumulation_steps == 0:
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad(set_to_none=True)
-
-            running_loss += total_loss.item()
+            batch_loss = float(total_loss.item())
+            running_loss += batch_loss
             num_batches += 1
-            batch_bar.set_postfix(loss=f"{total_loss.item():.4f}")
+            batch_bar.set_postfix(loss=f"{batch_loss:.4f}")
 
             # Log loss components and AMP scale periodically
             if batch_idx % 50 == 0:
@@ -105,6 +99,17 @@ def train_one_epoch(
                 for i, fname in enumerate(filenames):
                     mask_hw = (pred_np[i, 0] * 255).astype(np.uint8)
                     dataset.update_prev_mask(fname, mask_hw)
+
+            # Release per-batch tensors before optimizer step to reduce peak
+            # memory when AdamW initializes/updates moments.
+            del images, masks, edges, prev_masks, outputs, targets, total_loss, loss_for_backward
+
+            if batch_idx % accumulation_steps == 0:
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                scaler.step(optimizer)
+                scaler.update()
+                optimizer.zero_grad(set_to_none=True)
         except RuntimeError as e:
             if "out of memory" in str(e).lower():
                 tqdm.write(f"  [e{epoch+1} b{batch_idx}] CUDA OOM; skipping batch and clearing cache")
@@ -116,11 +121,21 @@ def train_one_epoch(
             raise
 
     if num_batches > 0 and num_batches % accumulation_steps != 0:
-        scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        scaler.step(optimizer)
-        scaler.update()
-        optimizer.zero_grad(set_to_none=True)
+        try:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+        except RuntimeError as e:
+            if "out of memory" in str(e).lower():
+                tqdm.write(f"  [e{epoch+1}] CUDA OOM on tail optimizer step; skipping step and clearing cache")
+                optimizer.zero_grad(set_to_none=True)
+                if device.startswith("cuda") and torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                gc.collect()
+            else:
+                raise
 
     return running_loss / max(num_batches, 1)
 
