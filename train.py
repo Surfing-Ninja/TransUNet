@@ -188,24 +188,33 @@ def train_single_dataset(
     model = build_model(config)
 
     # ---- AMP scaler ------------------------------------------------------
-    # init_scale=256 avoids the default 65536 which causes fp16 gradient
-    # overflow → GradScaler silently skips optimizer steps with SGD.
     scaler = GradScaler(
         "cuda", enabled=device.startswith("cuda"), init_scale=256,
     )
 
     # ---- Optimizer / scheduler -------------------------------------------
-    optimizer = optim.SGD(
+    optimizer = optim.AdamW(
         model.parameters(),
         lr=config.learning_rate,
-        momentum=config.momentum,
         weight_decay=config.weight_decay,
-        nesterov=True,
+        betas=(0.9, 0.999),
     )
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
+    warmup_epochs = max(int(getattr(config, "warmup_epochs", 5)), 0)
+    warmup_scheduler = optim.lr_scheduler.LinearLR(
         optimizer,
-        T_max=config.num_epochs,
+        start_factor=float(getattr(config, "warmup_start_factor", 0.1)),
+        end_factor=1.0,
+        total_iters=max(warmup_epochs, 1),
+    )
+    cosine_scheduler = optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=max(config.num_epochs - warmup_epochs, 1),
         eta_min=config.eta_min,
+    )
+    scheduler = optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs],
     )
     # ---- Loss ------------------------------------------------------------
     criterion = MaSLoss(config)
